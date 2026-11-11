@@ -10,7 +10,8 @@ The same ~1,350 lines of Scala 3 written seven ways:
 - **Ox**: no effect runtime, direct style on virtual threads.
 
 Each variant was run through the same checks and gives the same results, so the
-comparison is about the code and the libraries, not about features.
+comparison is about the code and the libraries, not about features (nor speed: see the
+[appendix](#appendix-numbers)).
 
 It's not a benchmark or a toy. These are the scripts that manage my NixOS machines, and
 they do the unglamorous things CLI tools do:
@@ -95,57 +96,39 @@ repository:
   parsing (they touch real machines). Those code paths were reviewed line by line against
   the baseline.
 
-## Numbers
+## Verdict
 
-### Code size (non-blank, non-comment lines)
+What actually separated the seven. Code size and speed don't: see the
+[appendix](#appendix-numbers) for why.
 
-| | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| check-secrets.scala | 307 | 304 | 293 | 278 | 286 | 299 | **273** |
-| deploy.scala | 337 | 327 | 330 | 340 | **293** | 320 | 302 |
-| router-backup.scala | 192 | 183 | 180 | 185 | 194 | 183 | **173** |
-| router.scala | 65 | 65 | 70 | 65 | **59** | 64 | 64 |
-| test.scala | 168 | 165 | 172 | 166 | **158** | 163 | 165 |
-| upgrade.scala | 39 | 39 | 41 | 36 | **34** | 38 | 38 |
-| **scripts** | 1108 | 1083 | 1086 | 1070 | 1024 | 1067 | **1015** |
-| scala-lib | 286 | 282 | 294 | 333 | 320 | 280 | **268** |
-| **total** | 1394 | 1365 | 1380 | 1403 | 1344 | 1347 | **1283** |
+| | cats-effect + EitherT | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
+|---|---|---|---|---|---|---|---|
+| effects in signatures | yes (`IO`) | yes (`IO`) | yes (`EitherT[IO, …]`) | yes (`< S`) | yes (`ZIO`) | yes (`ZIO`) | **no** (only errors, as `Either`) |
+| typed errors | sound: plain values | by convention: hidden exceptions (no catch-alls, no escaping) | sound: plain values | sound | sound | sound, but invariance traps | by convention: `break` exceptions (no catch-alls around `.ok()`) |
+| how the code reads | for-comprehensions + 157 lifting calls | plain `IO` for-comprehensions | direct style + `.await` everywhere | direct style + `.now` everywhere | plain for-comprehensions | for-comprehensions, cats syntax on ZIO | plain code + `.ok()` |
+| Ctrl-C and cleanup | built in | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in | built in (+ exit code 130 by hand; interruption only at blocking calls) |
+| surrounding libraries | best (decline, os-lib) | best | best | OK (case-app: options only) | weak CLI, thin file/process libs | best | best |
+| fragility | none | none | **macro broken on Scala ≥ 3.9**, macro quirks | RC, macro quirks, bugs reported | zio-nio stale | silent no-op `handleError`, invariance | none |
 
-What adds up, per variant:
-
-| | per-step plumbing | per-definition | other |
-|---|---|---|---|
-| cats-effect | **157** `.toEitherT` / `.liftTScriptError` / `.value` / `EitherT(…)` | – | – |
-| cats-mtl | none | 54 `(using CanFail)` | – |
-| cats-cps | 117 `.await` + 90 `.awaitIO` | 44 `async[ScriptT] { … }` | 3 `.toVector` and 4 `val` bindings to dodge macro quirks |
-| kyo | 248 `.now` | 76 `(using Frame)` | – |
-| zio | none | – | 26 `.orDie` (zio-nio's typed IOExceptions) |
-| zio-interop | none | – | 7 `.orDie`, 4 type ascriptions |
-| ox | 93 `.ok()` | 25 `either { … }` | – |
-
-For reference, the version before `EitherT`, which threw its `Fail`/`Exit` as exceptions,
-was 1345 lines.
-
-### Build and runtime
-
-Measured on one machine (AMD Ryzen 9 7950X, 64 GB, JDK 27.0.1), all seven in the same
-session, with the AOT cache. Startup and run times are averages of 12 runs; compile times
-are 2 runs, without scala-cli's compile server. Treat differences under ~10% as noise.
-
-| | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| cold compile, check-secrets.scala | 3.99 s | 3.97 s | 4.86 s | 5.35 s | **3.80 s** | 4.13 s | 3.95 s |
-| cold compile, deploy.scala | 4.27 s | 4.24 s | 5.25 s | 6.04 s | **4.04 s** | 4.41 s | 4.18 s |
-| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 26.2 MB | 29.1 MB | **21.3 MB** | 39.3 MB | 22.6 MB |
-| `test.scala -l` wall time | 0.140 s | 0.136 s | 0.140 s | 0.205 s | 0.152 s | 0.160 s | **0.089 s** |
-| `test.scala --help` wall time | 0.130 s | 0.135 s | 0.139 s | **0.089 s** | 0.149 s | 0.130 s | **0.089 s** |
-| `check-secrets.scala` on a small repo (≈10 git calls) | 0.335 s | 0.330 s | 0.339 s | 0.430 s | 0.365 s | 0.353 s | **0.268 s** |
-| `check-secrets.scala` max RSS | 88 MB | 91 MB | 92 MB | 130 MB | 87 MB | 92 MB | **75 MB** |
-
-All of these are far below what a user of these scripts would notice next to `nix eval`
-(seconds) or a VM test (minutes); performance doesn't decide anything here. Still, the
-pattern is clear: **with no effect runtime to start, Ox is the fastest and lightest**,
-~50 ms faster to start than the cats-effect and ZIO variants.
+- **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
+  (decline, os-lib), every Monad combinator, and typed errors that are plain values, so
+  nothing can swallow or leak them. I'll take the plumbing for that.
+- **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
+  keeps all of that and drops the plumbing. In exchange, typed errors become hidden
+  exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
+- **If you want the strongest guarantees with the least code in an effect system:
+  native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
+- **Ox: no effect system, and that's why I won't use it.** Nothing in a type says a
+  function has effects, and that's the main thing I want from an effect system; it's why
+  I stay on `IO` despite `EitherT`'s plumbing. Its other trade-offs are `.ok()`'s
+  catch-all hazard and interruption only at blocking calls. If effect tracking doesn't
+  matter to you, it works well for CLI scripts like these: plain code, the same
+  libraries, no runtime.
+- **Avoid for now:**
+  - **cats-effect-cps:** a nice idea that doesn't compile on current Scala.
+  - **ZIO with cats syntax:** it runs into invariance traps and drags in both ecosystems.
+  - **kyo:** the most interesting design and the nicest-reading code, but for something
+    you maintain, I'd wait for 1.0.
 
 ## Findings
 
@@ -234,6 +217,18 @@ def steps: Either[ScriptError, Unit] = either {
 }
 ```
 
+What each style makes you write, per variant (counts over all six scripts and their shared code):
+
+| | per-step plumbing | per-definition | other |
+|---|---|---|---|
+| cats-effect | **157** `.toEitherT` / `.liftTScriptError` / `.value` / `EitherT(…)` | – | – |
+| cats-mtl | none | 54 `(using CanFail)` | – |
+| cats-cps | 117 `.await` + 90 `.awaitIO` | 44 `async[ScriptT] { … }` | 3 `.toVector` and 4 `val` bindings to dodge macro quirks |
+| kyo | 248 `.now` | 76 `(using Frame)` | – |
+| zio | none | – | 26 `.orDie` (zio-nio's typed IOExceptions) |
+| zio-interop | none | – | 7 `.orDie`, 4 type ascriptions |
+| ox | 93 `.ok()` | 25 `either { … }` | – |
+
 ### cats-effect + `EitherT`: what I'm sticking with
 
 Sound, explicit and dependency-free, but clunky:
@@ -258,8 +253,7 @@ remember.
 The port was almost mechanical. Removing the plumbing turned every function that can fail
 into a compile error ("no `Raise[IO, ScriptError]`"), and adding `(using CanFail)` fixed
 it. The steps are plain `IO`, so every cats combinator works on them, and transformer
-stacks remain available where they earn their place. It's as fast as the baseline, and
-the jar barely changes.
+stacks remain available where they earn their place.
 
 How it works, and the price: `Handle.allow` raises your error as a private exception
 inside `IO`, which only its own `rescue` catches. That leaves two hazards, which the
@@ -303,14 +297,13 @@ What it costs:
   - An `await` inside a `Resource.use` lambda needs its own nested `async`.
 - **No less plumbing, just different:** 207 `.await`/`.awaitIO` against `EitherT`'s 157
   lifting calls. What it removes is nesting and the combinator vocabulary for control flow.
-- **Slower compiles:** about 1 s more per script than the baseline.
 
 In short: it reads better than `EitherT` for-comprehensions, but it ties you to a macro
 that broke on the current compiler. I wouldn't rely on it until that's fixed.
 
-### Ox: no effect runtime: it held up, but effects don't show in types
+### Ox: no effect runtime, but effects don't show in types
 
-The most different approach, and the most surprising result:
+The most different approach:
 - **No effect type at all.** Steps are plain methods that block (on virtual threads). Errors
   are `Either[ScriptError, A]` written as `either { … step.ok() … }` (Scala 3's
   `boundary`/`break` underneath).
@@ -320,8 +313,6 @@ The most different approach, and the most surprising result:
   - The memoized password prompt is a `lazy val`.
   - Timing is a five-line helper.
   - `OxApp` handles Ctrl-C by interrupting the main fork and running the finalizers.
-- **The best numbers:** the shortest code (1283 lines), the fastest startup (0.089 s), the
-  fastest check-secrets run (0.268 s), and the least memory (75 MB).
 - **decline, os-lib and upickle** work unchanged, since they never needed an effect type.
 
 What to know:
@@ -354,14 +345,11 @@ What to know:
 
 ### ZIO, native stack: the cleanest effectful code
 
-- **Code:** typed errors without transformers, and plain for-comprehensions. Among the
-  effect systems, the scripts came out shortest (deploy.scala 13% shorter than the
-  baseline).
+- **Code:** typed errors without transformers, and plain for-comprehensions.
 - **Cleanup:** `ZIO.acquireRelease`/`ZIO.scoped` handle resources, and zio-nio's
   `createTempDirectoryScoped` replaces a hand-written acquire/release pair.
 - **Ctrl-C:** works out of the box. `ZIOAppDefault`'s shutdown hook interrupts the program
   and waits for finalizers.
-- **Build:** the fastest compiles and the smallest jar.
 
 The edges:
 - **Exit codes:** a successful `ZIOApp` always exits 0, whatever `run` returns, so
@@ -398,8 +386,8 @@ That much I expected. What I didn't:
   start `secret-tool` with `.handleError(_ => 1)`. Under ZIO a failed start is a defect,
   and cats' `handleError` on an error type of `Nothing` catches nothing, with no warning.
   ZIO's `catchAllDefect` is what's needed.
-- **Size:** the interop brings cats-effect (and cats-mtl) along, making this the biggest
-  jar at 39 MB.
+- **Weight:** the interop brings cats-effect (and cats-mtl) along, so you carry both
+  ecosystems (the biggest jar, 39 MB).
 
 If you go ZIO, go native.
 
@@ -416,8 +404,7 @@ If you go ZIO, go native.
     for unrendered values needed a macro.
   - **Compiler settings:** `-Wunused` can't be `all` (kyo-direct's expansion triggers
     false warnings), and two `-Wconf`s silence warnings from kyo's inlined code.
-- **Cost:** the slowest compiles (35–40% over cats-effect), the most memory on check-secrets,
-  a bigger jar, and the slowest real runs (+60–90 ms).
+- **Cost:** compiles are 35–40% slower than cats-effect's (noticeable in CI, not for users).
 - **CLI:** case-app only parses options, so positional arguments and env vars are parsed
   by hand.
 
@@ -474,38 +461,33 @@ threads and `boundary`/`break`.
     [os-lib#457](https://github.com/com-lihaoyi/os-lib/pull/457).
 - **JSON:** upickle, kyo-schema-json and zio-json are all fine for this.
 
-## Verdict
+## Appendix: numbers
 
-| | cats-effect + EitherT | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
-|---|---|---|---|---|---|---|---|
-| script readability | ★★☆ | ★★★ | ★★★ | ★★★ | ★★★ | ★★☆ | ★★★ |
-| typed errors | sound, noisy | by convention (no catch-alls, no escaping) | sound | sound | sound | sound, but invariance traps | by convention (no catch-alls around `.ok()`) |
-| Ctrl-C and cleanup | built in | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in | built in (+ exit code 130 by hand) |
-| surrounding libraries | best | best | best | OK | weak CLI, thin file/process libs | best | best |
-| compile / jar | medium | medium | slower / medium | slowest / bigger | fastest / smallest | medium / biggest | fast / small |
-| startup / memory | medium | medium | medium | slowest / most | medium | medium | **fastest / least** |
-| effects in signatures | yes (`IO`) | yes (`IO`) | yes (`EitherT[IO, …]`) | yes (`< S`) | yes (`ZIO`) | yes (`ZIO`) | **no** (only errors, as `Either`) |
-| maturity | stable | stable | **broken on Scala ≥ 3.9** | RC | stable (zio-nio stale) | stable | stable |
+**These don't decide anything.**
+- **Startup:** every variant starts in 0.09–0.2 s, which nobody notices next to `nix eval`
+  (seconds) or a VM test (minutes).
+- **Code size:** the totals are within ±5% of each other, and mostly reflect formatting
+  and how a few helpers happened to be written.
 
-- **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
-  (decline, os-lib), every Monad combinator, and typed errors that are plain values, so
-  nothing can swallow or leak them. I'll take the plumbing for that.
-- **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
-  keeps all of that and drops the plumbing. In exchange, typed errors become hidden
-  exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
-- **Ox has the best numbers, but I won't use it.** It's the least code, the fastest, and
-  the same libraries, with no effect system at all. But nothing in a type says a function
-  has effects, and that's the main thing I want from an effect system; it's why I stay
-  on `IO` despite `EitherT`'s plumbing. Its other trade-offs are `.ok()`'s catch-all
-  hazard and interruption only at blocking calls. If effect tracking doesn't matter to
-  you, it's a serious contender for CLI scripts like these.
-- **If you want the strongest guarantees with the least code in an effect system:
-  native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
-- **Avoid for now:**
-  - **cats-effect-cps:** a nice idea that doesn't compile on current Scala.
-  - **ZIO with cats syntax:** it runs into invariance traps and produces the largest jar.
-  - **kyo:** the most interesting design and the nicest-reading code, but for something
-    you maintain, I'd wait for 1.0.
+Kept here for completeness. Measured on one machine (AMD Ryzen 9 7950X, 64 GB,
+JDK 27.0.1), all seven in the same session, with the AOT cache. Run times are averages of
+12 runs; compile times are 2 runs, without scala-cli's compile server.
+
+| | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| code lines (non-blank, non-comment), scripts + scala-lib | 1394 | 1365 | 1380 | 1403 | 1344 | 1347 | 1283 |
+| cold compile, check-secrets.scala | 3.99 s | 3.97 s | 4.86 s | 5.35 s | 3.80 s | 4.13 s | 3.95 s |
+| cold compile, deploy.scala | 4.27 s | 4.24 s | 5.25 s | 6.04 s | 4.04 s | 4.41 s | 4.18 s |
+| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 26.2 MB | 29.1 MB | 21.3 MB | 39.3 MB | 22.6 MB |
+| `test.scala -l` wall time | 0.140 s | 0.136 s | 0.140 s | 0.205 s | 0.152 s | 0.160 s | 0.089 s |
+| `check-secrets.scala` on a small repo (≈10 git calls) | 0.335 s | 0.330 s | 0.339 s | 0.430 s | 0.365 s | 0.353 s | 0.268 s |
+| `check-secrets.scala` max RSS | 88 MB | 91 MB | 92 MB | 130 MB | 87 MB | 92 MB | 75 MB |
+
+The only differences worth a footnote:
+- **Compiles:** kyo's and cats-cps' macros make them ~1–2 s slower per script.
+- **Jar:** zio-interop's is the largest, since it carries both ecosystems.
+- **Memory and startup:** kyo uses the most memory; Ox starts fastest, as it has no
+  effect runtime to start.
 
 ## How this was made
 
