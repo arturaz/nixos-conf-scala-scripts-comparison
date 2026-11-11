@@ -98,38 +98,58 @@ repository:
 
 ## Verdict
 
-What actually separated the seven. Code size and speed don't: see the
-[appendix](#appendix-numbers) for why.
+**The criterion: stupidity resistance.** With LLMs writing most code these days,
+boilerplate costs almost nothing. What matters is how hard it is to write a *wrong*
+program that still compiles, because that's what slips through review. Code size and
+speed don't separate these stacks at all (see the [appendix](#appendix-numbers)).
 
 | | cats-effect + EitherT | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
 |---|---|---|---|---|---|---|---|
+| **mistakes that compile silently** | **few**: errors are values, catch-alls can't swallow a `Left` | a catch-all (`.attempt`, `.handleError(_ => …)`) swallows typed errors; raising after `allow` ends escapes as `Handle$Submarine` | few (same model as `EitherT`) | few | **few**: `catchAll` only sees `E`, defects separate | `handleError` on a `UIO` compiles and does nothing | a catch-all (`Try`, `catch NonFatal`) swallows `.ok()`; side effects anywhere, untracked |
 | effects in signatures | yes (`IO`) | yes (`IO`) | yes (`EitherT[IO, …]`) | yes (`< S`) | yes (`ZIO`) | yes (`ZIO`) | **no** (only errors, as `Either`) |
-| typed errors | sound: plain values | by convention: hidden exceptions (no catch-alls, no escaping) | sound: plain values | sound | sound | sound, but invariance traps | by convention: `break` exceptions (no catch-alls around `.ok()`) |
+| typed errors | sound: plain values | by convention: hidden exceptions | sound: plain values | sound | sound | sound, but invariance traps | by convention: `break` exceptions |
 | how the code reads | for-comprehensions + 157 lifting calls | plain `IO` for-comprehensions | direct style + `.await` everywhere | direct style + `.now` everywhere | plain for-comprehensions | for-comprehensions, cats syntax on ZIO | plain code + `.ok()` |
 | Ctrl-C and cleanup | built in | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in | built in (+ exit code 130 by hand; interruption only at blocking calls) |
 | surrounding libraries | best (decline, os-lib) | best | best | OK (case-app: options only) | weak CLI, thin file/process libs | best | best |
-| fragility | none | none | **macro broken on Scala ≥ 3.9**, macro quirks | RC, macro quirks, bugs reported | zio-nio stale | silent no-op `handleError`, invariance | none |
+| fragility | none | none | **macro broken on Scala ≥ 3.9**, macro quirks | RC, macro quirks, bugs reported | zio-nio stale | invariance traps | none |
 
-- **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
-  (decline, os-lib), every Monad combinator, and typed errors that are plain values, so
-  nothing can swallow or leak them. I'll take the plumbing for that.
-- **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
-  keeps all of that and drops the plumbing. In exchange, typed errors become hidden
-  exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
-- **If you want the strongest guarantees with the least code in an effect system:
-  native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
+- **My choice: cats-effect + `EitherT`.** Its failure modes are compile errors, not
+  runtime surprises. Errors are plain values in the type, so nothing can swallow or leak
+  them, and the explicit lifting that looks like noise is exactly what makes a mistake
+  visible. It also keeps the best surrounding libraries (decline, os-lib) and every Monad
+  combinator. The plumbing is the price, and with an LLM typing it, a small one.
+- **Native ZIO is the other stupidity-resistant option.** Typed errors with no
+  transformer, `catchAll` that only sees `E`, defects kept apart. Expect to wrap zio-cli
+  and to use thinner file and process libraries.
+- **cats-mtl reads better than `EitherT`, but trades a compile error for a convention.**
+  Its typed errors are hidden exceptions in `IO`, safe only as long as no catch-all
+  handler wraps raising code. That's exactly the line an LLM likes to add "for
+  robustness".
 - **Ox: no effect system, and that's why I won't use it.** Steps aren't values (no
-  referential transparency), and nothing in a type says a function has effects. Those are
-  the main things I want from an effect system, and why I stay on `IO` despite `EitherT`'s
-  plumbing. Its other trade-offs are `.ok()`'s
-  catch-all hazard and interruption only at blocking calls. If effect tracking doesn't
-  matter to you, it works well for CLI scripts like these: plain code, the same
-  libraries, no runtime.
+  referential transparency), and nothing in a type says a function has effects. Its
+  `.ok()` has cats-mtl's catch-all hazard, and interruption happens only at blocking
+  calls. If effect tracking doesn't matter to you, it works for CLI scripts like these:
+  plain code, the same libraries, no runtime.
 - **Avoid for now:**
   - **cats-effect-cps:** a nice idea that doesn't compile on current Scala.
-  - **ZIO with cats syntax:** it runs into invariance traps and drags in both ecosystems.
+  - **ZIO with cats syntax:** a `handleError` that silently does nothing is the worst kind
+    of trap, and you drag in both ecosystems.
   - **kyo:** the most interesting design and the nicest-reading code, but for something
     you maintain, I'd wait for 1.0.
+
+**One more guard for any `IO`/`ZIO` stack:** the classic silent bug there is an effect
+that's built but never run (`Console[IO].println("x")` as a statement on its own). Scala 3
+catches it with `-Wnonunit-statement -Wvalue-discard` under `-Werror`:
+
+```
+65 |      Console[IO].errorln("this IO is built but never run")
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |      unused value of type cats.effect.IO[Unit]
+```
+
+My configuration now enables both. They found only two deliberate discards, of `Boolean`s
+from os-lib's `waitFor()` and `os.remove`, which now say `: Unit`. The variants here
+predate that.
 
 ## Findings
 
