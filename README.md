@@ -13,8 +13,11 @@ Each variant was run through the same checks and gives the same results, so the
 comparison is about the code and the libraries, not about features (nor speed: see the
 [appendix](#appendix-numbers)).
 
-It's not a benchmark or a toy. These are the scripts that manage my NixOS machines, and
-they do the unglamorous things CLI tools do:
+It's not a benchmark or a toy. The goal is **standalone scripts**: a file you run directly,
+in any checkout on any machine, with nothing installed but the language's own tool
+(scala-cli here), no build project and no environment to set up. These happen to be the
+scripts that manage my NixOS machines, so they call `nix`; that part is incidental. What
+matters is that they do the unglamorous things CLI tools do:
 
 | script | what it does | exercises |
 |---|---|---|
@@ -62,8 +65,9 @@ structure are kept as close as possible, so a diff shows the cost of the stack.
 Each script starts with a bash/Scala header that hands it to `scala-lib/run`. That compiles
 it once with [scala-cli](https://scala-cli.virtuslab.org/) into an assembly jar plus a JDK
 AOT cache (in `~/.cache/nixos-conf/scala/`), then starts it in 0.1–0.2 s. The scripts find
-their "repository" as the nearest `flake.nix` above them, so this repo has a placeholder
-`flake.nix`, `hosts/example/` and `tests/checks/example.nix`. With them these work in every
+their "repository" as the nearest `flake.nix` above them (a leftover of where they come
+from, not something the approach needs), so this repo has a placeholder `flake.nix`,
+`hosts/example/` and `tests/checks/example.nix`. With them these work in every
 variant:
 
 ```sh
@@ -543,14 +547,15 @@ The criteria are the ones that mattered above:
 - mistakes turned into compile errors;
 - a good CLI and process ecosystem;
 - cleanup on Ctrl-C;
-- the script style these use: a shebang, dependencies declared in the file, shared local
-  code, and fast repeated starts.
+- the script style these use: standalone (runnable anywhere with only the language's
+  own tool installed, no build project or environment setup), a shebang, dependencies
+  declared in the file, shared local code, and fast repeated starts.
 
 ### The language and libraries
 
 | | effects in types | typed errors | discarded results caught by | CLI / processes | notes |
 |---|---|---|---|---|---|
-| **Haskell** | **enforced** (`IO`; only `unsafePerformIO` escapes) | `Either`/`ExceptT` (our `EitherT` model) | `-Wall -Werror`, `-Wunused-do-bind` | optparse-applicative (≈ decline), typed-process (≈ os-lib) | stricter than Scala. Ctrl-C arrives as an async exception (`bracket`/`mask` take care). Excellent Nix support. |
+| **Haskell** | **enforced** (`IO`; only `unsafePerformIO` escapes) | `Either`/`ExceptT` (our `EitherT` model) | `-Wall -Werror`, `-Wunused-do-bind` | optparse-applicative (≈ decline), typed-process (≈ os-lib) | stricter than Scala. Ctrl-C arrives as an async exception (`bracket`/`mask` take care). |
 | **TypeScript + Effect** | convention, kept by the ecosystem (`Effect<A, E, R>`) | typed `E`, defects separate | `tsc --strict`, lint (floating promises, unrun effects) | `@effect/cli`, `@effect/platform` `Command` | ZIO's model outside Scala: `Scope`, interruption, fibers. |
 | **Rust** | **none** (any function can spawn a process) | `Result` + `?` | `#[must_use]` on `Result`, `clippy -D warnings` | clap (≈ decline), `std::process` | the most mistake-resistant otherwise. SIGINT skips `Drop` unless handled (ctrlc crate, tokio signals). |
 | OCaml 5 + Eio | by capability passing (`env#fs`, `env#process_mgr`); `Unix` still escapes | `Result` | warnings-as-errors | cmdliner | the "marker capability" idea, done by a library. |
@@ -567,7 +572,7 @@ The criteria are the ones that mattered above:
 | Node + Effect | `#!/usr/bin/env node` on a `.ts` file (type stripping, recent Node) | ~50 ms | **no**: types are only erased; needs a `tsc --noEmit` step | yes, but dependencies need a `package.json` + `npm install` |
 | Bun | `#!/usr/bin/env bun` | very fast | **no** (separate `tsc`) | yes |
 | Haskell, `cabal` script | `#!/usr/bin/env cabal` + `{- cabal: … -}` header | native (builds cached) | yes | **no**, single file only |
-| Haskell, `stack script` / `nix-shell -i runghc` | yes | interpreted (~1 s) unless compiled | yes | awkward |
+| Haskell, `stack script` | yes | interpreted (~1 s) unless compiled | yes | awkward |
 | Rust, `rust-script` (or nightly `cargo -Zscript`) | `//! ```cargo` manifest in the file | native (compiles cached) | yes | awkward (`#[path]` modules) |
 | Kotlin `.main.kts` | `#!/usr/bin/env kotlin` + `@file:DependsOn` | JVM startup | yes | via `@file:Import` |
 
@@ -575,10 +580,11 @@ Two ways to close the gaps:
 - **Node:** our own launcher's trick works there too. A header hands the script to a small
   `run` wrapper that hashes the scripts and the shared library, runs `tsc --noEmit` and
   the linter once per change, then execs `node`.
-- **Haskell and Rust in a Nix repo:** each script can be a Nix derivation
-  (`pkgs.writers.writeHaskellBin`, `writeRustBin`) with the shared library as a normal
-  package. That gives native starts and full checking, but every edit goes through a Nix
-  build.
+- **Haskell and Rust:** the same trick, with the compiler doing the build. The `run`
+  wrapper compiles the script with the shared code (a local package for `cabal` or
+  `cargo`) once per change and execs the cached native binary. That gives native starts
+  and full checking, at the cost of slow first builds and a wrapper that does what
+  scala-cli does out of the box.
 
 Deno also adds two things to the rigor:
 - **Per-script permissions in the shebang**, e.g. `--allow-run=ssh,nix,git`, a runtime
