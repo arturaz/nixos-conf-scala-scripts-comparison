@@ -3,7 +3,8 @@ package nixosconf.lib
 
 import cats.data.NonEmptyVector
 import cats.effect.IO
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.syntax.all.*
 import yantl.{Newtype, Validator}
 

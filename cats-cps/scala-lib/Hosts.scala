@@ -3,7 +3,8 @@ package nixosconf.lib
 
 import cats.data.NonEmptyVector
 import cats.effect.IO
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.syntax.all.*
 import com.monovore.decline.Argument
 import yantl.Newtype
@@ -33,8 +34,7 @@ final case class KnownHosts(all: NonEmptyVector[HostName]):
 
 object KnownHosts:
   def discover(root: os.Path): ScriptT[KnownHosts] = async[ScriptT] {
-    val dirs = IO.blocking(os.list(root / "hosts").filter(os.isDir(_))).awaitIO
-    dirs
+    IO.blocking(os.list(root / "hosts").filter(os.isDir(_))).await
       .map(_.last).sorted.toVector
       .traverse(AttrName.make.asString(_).map(HostName(_)))
       .flatMap(NonEmptyVector.fromVector(_).toRight("no hosts in hosts/"))

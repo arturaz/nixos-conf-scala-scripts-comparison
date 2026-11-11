@@ -18,7 +18,8 @@
 //> using file scala-lib
 
 import cats.effect.{ExitCode, IO}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.{Command, Opts}
@@ -64,7 +65,7 @@ object Main extends ScriptApp:
       .await
     backup match
       case None =>
-        Console[IO].println(show"${parsed.host.name} has no router backups (router.backup.repository isn't set).").awaitIO
+        Console[IO].println(show"${parsed.host.name} has no router backups (router.backup.repository isn't set).").await
       case Some(backup) =>
         RouterBackup(
           root,
@@ -89,21 +90,20 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
   def warn(message: String): IO[Unit] = Console[IO].errorln(show"warning: $message")
 
   def run: ScriptT[Unit] = async[ScriptT] {
-    val clone = clonePath.awaitIO
+    val clone = clonePath.await
     val git = Git(clone)
-    val cloned = IO.blocking(os.isDir(clone / ".git")).awaitIO
-    if !cloned then
-      IO.blocking(os.makeDir.all(clone / os.up)).awaitIO
+    if !IO.blocking(os.isDir(clone / ".git")).await then
+      IO.blocking(os.makeDir.all(clone / os.up)).await
       Proc
         .succeedOr(os.proc("git", "clone", "--quiet", repo, clone), root)(_ => show"could not clone $repo.")
         .await
     // What the bash version's umask 077 did: only you can read the clone.
-    IO.blocking(os.perms.set(clone, "rwx------")).awaitIO
+    IO.blocking(os.perms.set(clone, "rwx------")).await
     val origin = git.output("remote", "get-url", "origin").await
     failUnless(origin == repo)(show"$clone is a clone of $origin, not $repo; move it away.").await
     val branch = git.output("symbolic-ref", "--short", "HEAD").await
     update(git, branch).await
-    Console[IO].errorln(show"Backing up $router's configuration...").awaitIO
+    Console[IO].errorln(show"Backing up $router's configuration...").await
     val config = Proc
       .outputOr(os.proc("ssh", router, "/export"), root)(_ => show"could not export $router's configuration.")
       .await
@@ -116,11 +116,11 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
     * offline, it carries on and the push fails.
     */
   def update(git: Git, branch: String): ScriptT[Unit] = async[ScriptT] {
-    if git.status("fetch", "--quiet", "origin").awaitIO == 0 then
-      if git.status("rebase", "--quiet", show"origin/$branch").awaitIO != 0 then
-        git.status("rebase", "--abort").awaitIO
+    if git.status("fetch", "--quiet", "origin").await == 0 then
+      if git.status("rebase", "--quiet", show"origin/$branch").await != 0 then
+        val _ = git.status("rebase", "--abort").await
         fail[Unit](show"${git.dir} doesn't rebase onto origin/$branch; sort it out there.").await
-    else warn(show"could not fetch $repo; going on with the clone as it is.").awaitIO
+    else warn(show"could not fetch $repo; going on with the clone as it is.").await
   }
 
   def commit(clone: os.Path, git: Git, config: String): ScriptT[Unit] = async[ScriptT] {
@@ -129,17 +129,17 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
     val exported = config + "\n"
     // The first line has the time of the export, which alone isn't a change.
     def body(s: String) = s.linesWithSeparators.drop(1).mkString
-    IO.blocking(Seq(exportFile, binaryFile).foreach(f => os.makeDir.all(f / os.up))).awaitIO
+    IO.blocking(Seq(exportFile, binaryFile).foreach(f => os.makeDir.all(f / os.up))).await
     val unchanged = IO
       .blocking(os.isFile(exportFile) && os.isFile(binaryFile) && body(os.read(exportFile)) == body(exported))
-      .awaitIO
-    if unchanged then Console[IO].println("The router's configuration hasn't changed since the last backup.").awaitIO
+      .await
+    if unchanged then Console[IO].println("The router's configuration hasn't changed since the last backup.").await
     else
       binaryBackup(password.await, binaryFile).await
-      IO.blocking(os.write.over(exportFile, exported, perms = "rw-------")).awaitIO
+      IO.blocking(os.write.over(exportFile, exported, perms = "rw-------")).await
       git.succeed("add", "--", backup.file, backup.binaryFile).await
       git.succeed("commit", "--quiet", "-m", message, "--", backup.file, backup.binaryFile).await
-      Console[IO].println(show"Committed: $message").awaitIO
+      Console[IO].println(show"Committed: $message").await
   }
 
   /** From your keyring (KWallet, through Secret Service); the first time, from sops
@@ -150,10 +150,10 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
     def secretTool(args: String*) =
       Nix("shell", "nixpkgs#libsecret", "-c", "secret-tool", args)
     val keyring = Seq("service", "nixos-conf", "key", "router-backup-password")
-    Proc.output(secretTool("lookup" +: keyring*), root).awaitIO match
+    Proc.output(secretTool("lookup" +: keyring*), root).await match
       case (0, password) if password.nonEmpty => password
       case _ =>
-        Console[IO].errorln(show"The backup password isn't in your keyring; decrypting it from $secrets...").awaitIO
+        Console[IO].errorln(show"The backup password isn't in your keyring; decrypting it from $secrets...").await
         val password = Proc
           .outputOr(
             Nix(
@@ -176,8 +176,8 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
             stdin = password
           )
           .handleError(_ => 1)
-          .awaitIO
-        if stored != 0 then warn("could not store the backup password in your keyring.").awaitIO
+          .await
+        if stored != 0 then warn("could not store the backup password in your keyring.").await
         password
   }
 
@@ -201,17 +201,17 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
         show"could not copy the binary backup from $router."
       )
       .await
-    IO.blocking(os.perms.set(newFile, "rw-------")).awaitIO
-    if Proc.status(os.proc("ssh", router, show"/file remove $name.backup"), root).awaitIO != 0 then
-      warn(show"could not remove $name.backup on $router.").awaitIO
-    IO.blocking(os.move.over(newFile, binaryFile)).awaitIO
+    IO.blocking(os.perms.set(newFile, "rw-------")).await
+    if Proc.status(os.proc("ssh", router, show"/file remove $name.backup"), root).await != 0 then
+      warn(show"could not remove $name.backup on $router.").await
+    IO.blocking(os.move.over(newFile, binaryFile)).await
   }
 
   def push(git: Git, branch: String): ScriptT[Unit] = async[ScriptT] {
-    val (code, log) = Proc.output(os.proc("git", "-C", git.dir, "log", show"origin/$branch..HEAD"), git.dir).awaitIO
+    val (code, log) = Proc.output(os.proc("git", "-C", git.dir, "log", show"origin/$branch..HEAD"), git.dir).await
     if code == 0 && log.nonEmpty then
-      if git.status("push", "--quiet", "origin", branch).awaitIO == 0 then
-        Console[IO].println(show"Pushed to $repo.").awaitIO
+      if git.status("push", "--quiet", "origin", branch).await == 0 then
+        Console[IO].println(show"Pushed to $repo.").await
       else
         fail[Unit](
           show"could not push to $repo; the backup is committed in ${git.dir} and the " +

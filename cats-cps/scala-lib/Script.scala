@@ -1,18 +1,18 @@
 // Running a script: its entry point, stopping it with a message, where the repository is.
 package nixosconf.lib
 
-import _root_.cps.{CpsMonadContext, CpsMonadConversion}
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.data.EitherT
 import cats.effect.{ExitCode, IO, IOApp}
-import cats.effect.cps.*
 import cats.effect.std.Console
 import cats.syntax.all.*
 import yantl.AsString
 
 /** Why a script stops before its end. Not an exception: whatever can stop the script
   * is a [[ScriptT]] (`EitherT[IO, ScriptError, A]`), written in direct style:
-  * `async[ScriptT] { ... }` with `.await` on a [[ScriptT]] and `.awaitIO` on a plain
-  * `IO` (cats-effect-cps). A thrown exception is a defect (a bug, or something no one
+  * `async[ScriptT] { ... }` with `.await` on a [[ScriptT]] or a plain `IO`
+  * (dotty-cps-async, through the conversion below). A thrown exception is a defect (a bug, or something no one
   * expected, e.g. a file operation failing), ending the script with a stack trace.
   */
 sealed trait ScriptError
@@ -29,12 +29,6 @@ type ScriptT[A] = EitherT[IO, ScriptError, A]
 /** A plain `IO` inside `async[ScriptT]` (it can't stop the script). */
 given CpsMonadConversion[IO, ScriptT] with
   def apply[A](io: IO[A]): ScriptT[A] = EitherT.liftF(io)
-
-extension [A](io: IO[A])(using CpsMonadContext[ScriptT])
-  /** `.await` for a plain `IO` inside `async[ScriptT]` (cats-effect-cps' own `.await`
-    * only takes the block's monad, and an extension of the same name would shadow it).
-    */
-  transparent inline def awaitIO: A = _root_.cps.await[IO, A, ScriptT](io)
 
 /** Stops the script with `error: <message>`. */
 def fail[A](message: String): ScriptT[A] = EitherT.leftT(Fail(message))
@@ -81,5 +75,5 @@ object Repo:
         .flatMap(p => Iterator.iterate(p)(_ / os.up).takeWhile(_ != os.root))
         .find(dir => os.isFile(dir / "flake.nix"))
         .toRight("can't find the repository (no flake.nix above the script)")
-    }.awaitIO.orFail.await
+    }.await.orFail.await
   }

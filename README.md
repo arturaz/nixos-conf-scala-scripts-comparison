@@ -3,7 +3,7 @@
 The same ~1,350 lines of Scala 3 written seven ways:
 - **cats-effect** (with `EitherT`);
 - **cats-effect + cats-mtl**;
-- **cats-effect + cats-effect-cps** (async/await over `EitherT`);
+- **cats-effect + dotty-cps-async** (async/await over `EitherT`);
 - **kyo**;
 - **ZIO** (native ecosystem);
 - **ZIO with cats interop**;
@@ -33,14 +33,14 @@ Shared code is in each variant's `scala-lib/`: the entry point (`Script.scala`),
 |---|---|---|
 | [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline, and what my configuration uses: `IO[Either[ScriptError, A]]` composed with `EitherT` |
 | [`cats-mtl/`](cats-mtl) | the same + cats-mtl 1.7.0 | only the errors: plain `IO[A]` with `(using Raise[IO, ScriptError])`, `Handle.allow` at the top |
-| [`cats-cps/`](cats-cps) | the same + cats-effect-cps 0.5.0 (dotty-cps-async) | only the syntax: the same `EitherT` errors, written as `async[ScriptT] { … .await … }`. **Scala 3.8.4**, see below |
+| [`cats-cps/`](cats-cps) | the same + cps-async-connect-cats-effect 1.4.0 (dotty-cps-async 1.4.0) | only the syntax: the same `EitherT` errors, written as `async[ScriptT] { … .await … }` |
 | [`kyo/`](kyo) | kyo 1.0.0-RC7: kyo-core, kyo-direct, kyo-system, kyo-schema-json, kyo-case-app | everything: kyo effects in direct style, kyo-system for processes and files, case-app for the CLI |
 | [`zio/`](zio) | zio 2.1.27, zio-streams, zio-process 0.8.1, zio-nio 2.0.2, zio-cli 0.8.2, zio-json 1.1.2 | everything: the native ZIO stack |
 | [`zio-interop/`](zio-interop) | zio 2.1.27 + zio-interop-cats 23.1.0.15, decline, os-lib, upickle | only the runtime: ZIO's `IO[ScriptError, A]` instead of cats-effect, with cats syntax (`traverse_`, `whenA`, `ifM`, `parTraverse`) running on ZIO |
 | [`ox/`](ox) | Ox 1.1.0, decline, os-lib, upickle (cats-core only for decline and `show`) | no effect runtime: plain blocking code on virtual threads, errors as `Either` written with `either { … .ok() … }`, Ctrl-C and resources via `OxApp` and scopes |
 
 All of them use JDK 27, `-Werror`, and [yantl](https://github.com/arturaz/yantl) for
-newtypes. All use Scala 3.9.0 except `cats-cps/`, which needs 3.8.4. The style is the same
+newtypes. All use Scala 3.9.0. The style is the same
 throughout: parse, don't validate; enums for options; expected failures are values; a
 thrown exception is a bug; and `show"..."` instead of `s"..."`, so only values with a
 deliberate rendering go into messages.
@@ -123,7 +123,7 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
 | how the code reads | for-comprehensions + 157 lifting calls | plain `IO` for-comprehensions | direct style + `.await` everywhere | direct style + `.now` everywhere | plain for-comprehensions | for-comprehensions, cats syntax on ZIO | plain code + `.ok()` |
 | Ctrl-C and cleanup | built in | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in | built in (+ exit code 130 by hand; interruption only at blocking calls) |
 | surrounding libraries | best (decline, os-lib) | best | best | OK (case-app: options only) | weak CLI, thin file/process libs | best | best |
-| fragility | none | none | **macro broken on Scala ≥ 3.9**, macro quirks | RC, macro quirks, bugs reported | zio-nio stale | invariance traps | none |
+| fragility | none | none | macro quirks | RC, macro quirks, bugs reported | zio-nio stale | invariance traps | none |
 
 - **My choice: cats-effect + `EitherT`.** Its failure modes are compile errors, not
   runtime surprises. Errors are plain values in the type, so nothing can swallow or leak
@@ -142,8 +142,13 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
   `.ok()` has cats-mtl's catch-all hazard, and interruption happens only at blocking
   calls. If effect tracking doesn't matter to you, it works for CLI scripts like these:
   plain code, the same libraries, no runtime.
+- **Direct style over `EitherT` (dotty-cps-async) keeps the sound error model** and
+  removes the nesting and the control-flow combinators. It works on current Scala when
+  you use dotty-cps-async's own cats-effect connector, not typelevel's cats-effect-cps
+  (see [below](#dotty-cps-async-eithert-in-direct-style-through-a-macro)). The cost is a
+  macro between you and the compiler: a few quirks to learn, and a bet that it keeps up
+  with every Scala release.
 - **Avoid for now:**
-  - **cats-effect-cps:** a nice idea that doesn't compile on current Scala.
   - **ZIO with cats syntax:** a `handleError` that silently does nothing is the worst kind
     of trap, and you drag in both ecosystems.
   - **kyo:** the most interesting design and the nicest-reading code, but for something
@@ -168,9 +173,11 @@ All seven variants now enable both. What they found:
   `waitFor()`/`os.remove` `Boolean`s, ignored exit codes, and parsing arguments only to
   check them. In the direct-style variants (Ox, kyo) there are more of these, because
   plain calls return values you often don't need.
-- **Macros again:** inside kyo-direct's `direct { }` and cats-effect-cps' `async { }`, the
+- **Macros again:** inside kyo-direct's `direct { }` and dotty-cps-async's `async { }`, the
   macro's rewrite loses a `: Unit` ascription, so the warning comes back. `val _ = …`
-  works there.
+  works there. The old dotty-cps-async (0.9.21, under cats-effect-cps) also let a
+  discarded *awaited* value (`git.status(…).await` as a statement) through; 1.4.0
+  reports it, which found three more deliberate discards to mark.
 
 ## Findings
 
@@ -203,13 +210,13 @@ def steps(using CanFail): IO[Unit] =
     …
   yield ()
 
-// cats-cps: EitherT, in direct style (.await for EitherT, .awaitIO for IO)
+// cats-cps: EitherT, in direct style (.await for EitherT and for IO alike)
 def steps: ScriptT[Unit] = async[ScriptT] {
-  val connected = Proc.status(onTarget("true"), root).awaitIO
+  val connected = Proc.status(onTarget("true"), root).await
   failUnless(connected == 0)(show"could not connect to $target. …").await
-  for file <- machineFiles.toVector do copyMachineFile(file).await
-  val rootAccess = becomeRoot.value.memoize.awaitIO
-  if IO.blocking(os.isDir(hostDir / "plasma")).awaitIO then copyPlasmaFiles(rootAccess).await
+  for file <- machineFiles do copyMachineFile(file).await
+  val rootAccess = becomeRoot.value.memoize.await
+  if IO.blocking(os.isDir(hostDir / "plasma")).await then copyPlasmaFiles(rootAccess).await
   …
 }
 
@@ -265,7 +272,7 @@ What each style makes you write, per variant (counts over all six scripts and th
 |---|---|---|---|
 | cats-effect | **157** `.toEitherT` / `.liftTScriptError` / `.value` / `EitherT(…)` | – | – |
 | cats-mtl | none | 54 `(using CanFail)` | – |
-| cats-cps | 117 `.await` + 90 `.awaitIO` | 44 `async[ScriptT] { … }` | 3 `.toVector` and 4 `val` bindings to dodge macro quirks |
+| cats-cps | 202 `.await` | 43 `async[ScriptT] { … }` | – |
 | kyo | 248 `.now` | 76 `(using Frame)` | – |
 | zio | none | – | 26 `.orDie` (zio-nio's typed IOExceptions) |
 | zio-interop | none | – | 7 `.orDie`, 4 type ascriptions |
@@ -310,38 +317,53 @@ types don't catch and which are documented on `CanFail`:
 For a CLI with one `allow` at the top this is easily safe. On a big team I'd want a lint
 for catch-all handlers.
 
-### cats-effect-cps: `EitherT` in direct style, but a fragile macro
+### dotty-cps-async: `EitherT` in direct style, through a macro
 
 The idea: keep `EitherT`'s sound error model and only change the syntax. `async[ScriptT]
 { … }` works for any cats `Monad`, so `EitherT[IO, ScriptError, *]` included. A
-`CpsMonadConversion[IO, ScriptT]` plus a small `.awaitIO` extension lets plain `IO`s be
-awaited without lifting. Then `if`, `match` and `for` loops over awaited values are
-ordinary Scala, and `ifM`, `whenA` and `(for … yield …).value` disappear.
+`CpsMonadConversion[IO, ScriptT]` lets plain `IO`s be awaited with the same `.await`,
+without lifting. Then `if`, `match` and `for` loops over awaited values are ordinary
+Scala, and `ifM`, `whenA` and `(for … yield …).value` disappear.
 
-What it costs:
-- **It doesn't compile on current Scala.** cats-effect-cps 0.5.0 (on dotty-cps-async
-  0.9.21, and 0.9.23 too) fails on **Scala 3.9.0 and 3.10.1**, even for the README example
-  `async[IO] { IO(1).await + IO(2).await }`, with a type mismatch inside its macro
-  (`InferAsyncArg`). It works up to **3.8.4**, so this variant is pinned there
-  (reported: [cats-effect-direct#321](https://github.com/typelevel/cats-effect-direct/issues/321);
-  cats-effect-cps has since been renamed cats-effect-direct). A macro-based syntax layer is
-  a bet that it keeps up with every compiler release.
-- **Macro quirks you need to learn:**
-  - `x.await.nonEmpty` and `!x.awaitIO` mistype with `EitherT` (not with `IO`): bind to
-    a `val` first (4 places).
-    [dotty-cps-async#144](https://github.com/dotty-cps-async/dotty-cps-async/issues/144)
-  - Looping over a `Seq` with an `await` inside is ambiguous (two built-in instances
-    match), but a `List` or `Vector` works (3 `.toVector`s).
-    [dotty-cps-async#142](https://github.com/dotty-cps-async/dotty-cps-async/issues/142)
+**Use dotty-cps-async's own connector, not cats-effect-cps.** This variant first used
+typelevel's cats-effect-cps 0.5.0 (since renamed cats-effect-direct). It's a thin layer
+that pins dotty-cps-async **0.9.21**, and that old version was the problem:
+- it failed on **Scala 3.9.0 and 3.10.1**, even for `async[IO] { IO(1).await + IO(2).await }`
+  (a type mismatch in its `InferAsyncArg`), so the variant was pinned to 3.8.4
+  ([cats-effect-direct#321](https://github.com/typelevel/cats-effect-direct/issues/321));
+- `x.await.nonEmpty` and `!x.await` mistyped with `EitherT` (4 `val` bindings)
+  ([dotty-cps-async#144](https://github.com/dotty-cps-async/dotty-cps-async/issues/144));
+- a `for` loop over a `Seq` with an `await` inside was ambiguous (3 `.toVector`s)
+  ([dotty-cps-async#142](https://github.com/dotty-cps-async/dotty-cps-async/issues/142));
+- it needed a hand-written `.awaitIO` for plain `IO`s.
+
+All four are gone with dotty-cps-async **1.4.0** through
+`io.github.dotty-cps-async::cps-async-connect-cats-effect`, the maintainer's own
+cats-effect instances, on Scala 3.9.0. The maintainer pointed this out on #144: 0.9.21
+was published under the old `com.github.rssh` group, so a newer dotty-cps-async next to
+cats-effect-cps doesn't even evict it. cats-effect-cps adds nothing the connector lacks.
+(cats-effect-direct 1.0.0 is now a different library: no macro, Loom's internal
+`Continuation`, Java 21+ and `--add-exports java.base/jdk.internal.vm=ALL-UNNAMED`.)
+
+What it still costs, on 1.4.0:
+- **It's a macro.** It has to keep up with every compiler release, as 0.9.21 shows.
+- **Quirks to learn:**
   - The expansion trips `-Wunused:explicits` ("unused explicit parameter" on every
     `async`), like kyo-direct's.
     [dotty-cps-async#143](https://github.com/dotty-cps-async/dotty-cps-async/issues/143)
+  - A `: Unit` ascription is lost in the rewrite, so a deliberate discard is `val _ = …`
+    (4 places).
+  - No looping over an `Iterator` with an `await` inside (no `AsyncShift` for it):
+    `.toVector` first.
   - An `await` inside a `Resource.use` lambda needs its own nested `async`.
-- **No less plumbing, just different:** 207 `.await`/`.awaitIO` against `EitherT`'s 157
-  lifting calls. What it removes is nesting and the combinator vocabulary for control flow.
+  - Scripts that await a plain `IO` need `import nixosconf.lib.given` to see the
+    conversion.
+- **No less plumbing, just different:** 202 `.await`s against `EitherT`'s 157 lifting
+  calls. What it removes is nesting and the combinator vocabulary for control flow.
 
-In short: it reads better than `EitherT` for-comprehensions, but it ties you to a macro
-that broke on the current compiler. I wouldn't rely on it until that's fixed.
+In short: it reads better than `EitherT` for-comprehensions with the same error model,
+and on a current dotty-cps-async it works on the current compiler. What's left is the
+usual price of a macro: some quirks, and the dependence on it keeping up.
 
 ### Ox: no effect runtime, but effects don't show in types
 
@@ -478,13 +500,13 @@ And comments with data from this project on two existing issues:
 ### Macro-based direct style has a pattern
 
 Three of the variants use, or were tried with, a macro that rewrites direct-style code:
-kyo-direct, dotty-cps-async (cats-effect-cps), and zio-direct (tried, not included). All
-three:
+kyo-direct, dotty-cps-async, and zio-direct (tried, not included). All three:
 - trip `-Wunused` with false warnings from their expansion;
 - have edge cases where ordinary-looking code (a chained call, a method on an awaited
-  value) crashes or mistypes;
-- tie you to how well they keep up with the compiler (dotty-cps-async breaks on 3.9;
-  zio-direct's last release is from February 2023).
+  value, a `: Unit` ascription) crashes, mistypes or is lost;
+- tie you to how well they keep up with the compiler, and to how well whatever wraps
+  them keeps up with them (dotty-cps-async 0.9.21, still what cats-effect-cps pins,
+  breaks on 3.9; zio-direct's last release is from February 2023).
 
 Ox gets the same "plain code" feel with no macro at all, just blocking calls on virtual
 threads and `boundary`/`break`.
@@ -591,14 +613,17 @@ For this repo Scala still comes out ahead:
 
 Kept here for completeness. Measured on one machine (AMD Ryzen 9 7950X, 64 GB,
 JDK 27.0.1), all seven in the same session, with the AOT cache. Run times are averages of
-12 runs; compile times are 2 runs, without scala-cli's compile server.
+12 runs; compile times are 2 runs, without scala-cli's compile server. cats-cps was
+re-measured after moving from cats-effect-cps (dotty-cps-async 0.9.21) to dotty-cps-async
+1.4.0, next to the old build: only its code lines and jar changed; compiles, run times and
+memory were within noise of the old figures, which are kept.
 
 | | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| code lines (non-blank, non-comment), scripts + scala-lib | 1394 | 1365 | 1380 | 1403 | 1344 | 1347 | 1283 |
+| code lines (non-blank, non-comment), scripts + scala-lib | 1394 | 1365 | 1388 | 1403 | 1344 | 1347 | 1283 |
 | cold compile, check-secrets.scala | 3.99 s | 3.97 s | 4.86 s | 5.35 s | 3.80 s | 4.13 s | 3.95 s |
 | cold compile, deploy.scala | 4.27 s | 4.24 s | 5.25 s | 6.04 s | 4.04 s | 4.41 s | 4.18 s |
-| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 26.2 MB | 29.1 MB | 21.3 MB | 39.3 MB | 22.6 MB |
+| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 27.0 MB | 29.1 MB | 21.3 MB | 39.3 MB | 22.6 MB |
 | `test.scala -l` wall time | 0.140 s | 0.136 s | 0.140 s | 0.205 s | 0.152 s | 0.160 s | 0.089 s |
 | `check-secrets.scala` on a small repo (≈10 git calls) | 0.335 s | 0.330 s | 0.339 s | 0.430 s | 0.365 s | 0.353 s | 0.268 s |
 | `check-secrets.scala` max RSS | 88 MB | 91 MB | 92 MB | 130 MB | 87 MB | 92 MB | 75 MB |
@@ -617,7 +642,7 @@ direction, working on my NixOS configuration repository. Each variant was a bran
 this repository is a snapshot of the scripts from each.
 
 An LLM wrote code for seven effect stacks, several of which it had little real-world code
-to learn from (kyo 1.0 release candidates, Ox 1.x, zio-cli, cats-effect-cps). The result
+to learn from (kyo 1.0 release candidates, Ox 1.x, zio-cli, dotty-cps-async). The result
 is good code, but mostly because of how the work was set up. Its first drafts were often
 wrong in ways that looked right.
 
@@ -656,6 +681,11 @@ wrong in ways that looked right.
   forward-reference rule. os-lib's own build couldn't be run in the sandbox, so the fix
   was verified with a before/after harness instead: the patched file compiled against the
   published jar, then the reproduction run.
+- **Building on a stale wrapper.** The cats-cps variant first used typelevel's
+  cats-effect-cps, which pins dotty-cps-async 0.9.21 from April 2024. Its Scala 3.9 breakage
+  and two of the three quirks reported upstream were already fixed in dotty-cps-async
+  itself, as its maintainer pointed out. Checking how old a transitive dependency is,
+  and whether the library has its own integration, would have caught it before porting.
 - **Claims that needed correcting after testing.** "Chaining a method on `.await`
   mistypes" turned out to happen only with `EitherT`, not `IO` or `Future`. "The Seq loop
   fails" was first tested with a `var` in the loop, which was a different limitation. The

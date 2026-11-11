@@ -20,7 +20,8 @@
 
 import cats.data.EitherT
 import cats.effect.{ExitCode, IO, Ref, Resource}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.Command
@@ -126,22 +127,21 @@ final case class Deploy(
 
   def steps: ScriptT[Unit] = async[ScriptT] {
     // ssh exits with 255 on connection/auth errors.
-    val connected = Proc.status(onTarget("true"), root).awaitIO
+    val connected = Proc.status(onTarget("true"), root).await
     failUnless(connected == 0)(
       show"could not connect to $target. Is it on and on the network? Try: ssh $target"
     ).await
-    // toVector: for a Seq, dotty-cps-async finds two ways to await in foreach (ambiguous).
-    for file <- machineFiles.toVector do copyMachineFile(file).await
+    for file <- machineFiles do copyMachineFile(file).await
     // Asked for (and checked) when first needed, then kept.
-    val rootAccess = becomeRoot.value.memoize.awaitIO
-    if IO.blocking(os.isDir(hostDir / "plasma")).awaitIO then copyPlasmaFiles(rootAccess).await
+    val rootAccess = becomeRoot.value.memoize.await
+    if IO.blocking(os.isDir(hostDir / "plasma")).await then copyPlasmaFiles(rootAccess).await
     if args.update then
       Proc
         .succeedOr(Nix("flake", "update", "--flake", flake.unwrap), root)(_ =>
           show"updating flake.lock failed (see above). $nothingChanged"
         )
         .await
-      Console[IO].println("Updated flake.lock; commit it.").awaitIO
+      Console[IO].println("Updated flake.lock; commit it.").await
     // The repo is public: refuse to deploy (and so, likely, to push next) a plaintext
     // secret. After the machine's files above are copied in, as they get committed
     // too.
@@ -150,7 +150,7 @@ final case class Deploy(
         show"a secret would be published (see above). $nothingChanged"
       )
       .await
-    Console[IO].errorln("Evaluating the configuration...").awaitIO
+    Console[IO].errorln("Evaluating the configuration...").await
     val toplevel = Nix
       .evalJson[Toplevel](
         Installable(
@@ -166,10 +166,10 @@ final case class Deploy(
     args.action match
       case Action.Build =>
         val system = build(toplevel.drv).await
-        Console[IO].println(show"Done: $system is built and on $target.").awaitIO
+        Console[IO].println(show"Done: $system is built and on $target.").await
       case action =>
-        if alreadyThere(action, toplevel.out).awaitIO then
-          Console[IO].println(show"Nothing to do: $host already ${action.already} ${toplevel.out}.").awaitIO
+        if alreadyThere(action, toplevel.out).await then
+          Console[IO].println(show"Nothing to do: $host already ${action.already} ${toplevel.out}.").await
           setUpRouter(action).await
         else
           // The password before the build, so a typo doesn't cost one.
@@ -222,7 +222,7 @@ final case class Deploy(
     val rel = file.relativeTo(root).toString
     // Bound first: a method called directly on an `.await` confuses the cps transform's typing.
     val changed = Vcs.changed(root, Seq(rel)).await
-    if changed.nonEmpty then uncommitted.update(_ :+ rel).awaitIO
+    if changed.nonEmpty then uncommitted.update(_ :+ rel).await
   }
 
   /** Runs `proc` with its output into `dest` (through a temporary file, so a failure
@@ -242,7 +242,7 @@ final case class Deploy(
 
   def copyMachineFile(file: String): ScriptT[Unit] = async[ScriptT] {
     val dest = hostDir / file
-    if into(dest, onTarget(show"cat /etc/nixos/$file")).awaitIO then noteIfChanged(dest).await
+    if into(dest, onTarget(show"cat /etc/nixos/$file")).await then noteIfChanged(dest).await
     else
       fail[Unit](
         show"/etc/nixos/$file is missing on $target. Generate it there first, e.g.: sudo nixos-generate-config"
@@ -268,7 +268,7 @@ final case class Deploy(
             System.err.print(prompt)
             Option(scala.io.StdIn.readLine()).getOrElse("")
       )
-      .awaitIO
+      .await
     // -k: check the password even if sudo remembers an earlier one.
     val checked = Proc
       .output(
@@ -277,11 +277,11 @@ final case class Deploy(
         stdin = password + "\n",
         mergeErr = true
       )
-      .awaitIO
+      .await
     checked match
       case (0, _) => Root.Sudo(password)
       case (_, out) if out.contains("incorrect password") =>
-        Console[IO].errorln("Wrong password.").awaitIO
+        Console[IO].errorln("Wrong password.").await
         if attempt < 3 then askPassword(attempt + 1).await
         else fail[Root](show"3 wrong sudo passwords for $target. Nothing was changed.").await
       case (_, out) if out.contains("not in the sudoers") || out.contains("not allowed") =>
@@ -320,10 +320,10 @@ final case class Deploy(
       val (user, home) = line.span(_ != ':')
       val dir = hostDir / "plasma" / user
       val exported = show"$plasmaExport/$user"
-      IO.blocking(os.makeDir.all(dir)).awaitIO
+      IO.blocking(os.makeDir.all(dir)).await
       val canRead = Proc
         .status(onTarget(Seq("test", "-r", exported, "-a", "-x", exported).map(shellQuote).mkString(" ")), root)
-        .awaitIO == 0
+        .await == 0
       // A file's command and its input.
       val read: String => (os.proc, os.ProcessInput) =
         if canRead then
@@ -331,11 +331,11 @@ final case class Deploy(
         else
           val access = EitherT(rootAccess).await
           file => asRoot(access, "cat", show"${home.drop(1)}/.config/$file")
-      for file <- plasmaFiles.toVector do
+      for file <- plasmaFiles do
         val (proc, stdin) = read(file)
-        if into(dir / file, proc, stdin, Proc.devNull).awaitIO then noteIfChanged(dir / file).await
+        if into(dir / file, proc, stdin, Proc.devNull).await then noteIfChanged(dir / file).await
       // `val _ =`, not `: Unit`: the async macro's rewrite loses the ascription.
-      IO.blocking(if os.list(dir).isEmpty then { val _ = os.remove(dir) }).awaitIO
+      IO.blocking(if os.list(dir).isEmpty then { val _ = os.remove(dir) }).await
   }
 
   /** Builds the system, by default on the target (mostly: downloads from
@@ -349,23 +349,23 @@ final case class Deploy(
       case BuildOn.Local =>
         val trusted = Proc
           .output(Nix("store", "info", "--json", "--store", show"ssh-ng://$target"), root, env = nixEnv)
-          .awaitIO match
+          .await match
           case (0, json) =>
             scala.util.Try(ujson.read(json).obj.get("trusted").exists(_.boolOpt.contains(true))).getOrElse(false)
           case _ => false
         if trusted then BuildOn.Local
         else
-          Console[IO].errorln(show"note: $target doesn't trust this user yet, building there instead.").awaitIO
+          Console[IO].errorln(show"note: $target doesn't trust this user yet, building there instead.").await
           BuildOn.Target
     buildOn match
       case BuildOn.Local =>
-        Console[IO].errorln("Building locally...").awaitIO
+        Console[IO].errorln("Building locally...").await
         val system = Proc
           .outputOr(Nix("build", "--no-link", "--print-out-paths", show"$drv^*"), root)(_ =>
             show"the build failed (see above). $nothingChanged"
           )
           .await
-        Console[IO].errorln(show"Copying to $target...").awaitIO
+        Console[IO].errorln(show"Copying to $target...").await
         // --substitute-on-destination: the target fetches what it can from
         // cache.nixos.org instead of receiving it from us.
         Proc
@@ -377,7 +377,7 @@ final case class Deploy(
           .await
         system
       case BuildOn.Target =>
-        Console[IO].errorln(show"Building on $target...").awaitIO
+        Console[IO].errorln(show"Building on $target...").await
         Proc
           .succeedOr(Nix("copy", "--derivation", "--to", show"ssh://$target", drv), root, nixEnv)(_ =>
             show"copying the build instructions to $target failed (see above). $nothingChanged"
@@ -414,10 +414,10 @@ final case class Deploy(
 
   def activate(rootAccess: Root, action: Action, system: String): ScriptT[Unit] = async[ScriptT] {
     val (proc, stdin) = asRoot(rootAccess, "sh", "-c", activateScript, "sh", action.name, system)
-    Console[IO].errorln(show"Activating (${action.name}) on $target...").awaitIO
-    Proc.status(proc, root, stdin = stdin).awaitIO match
+    Console[IO].errorln(show"Activating (${action.name}) on $target...").await
+    Proc.status(proc, root, stdin = stdin).await match
       case 0 =>
-        Console[IO].println(show"Done: $host is on $system (${action.name}).").awaitIO
+        Console[IO].println(show"Done: $host is on $system (${action.name}).").await
         setUpRouter(action).await
       case code => failure(action, system, code).await
   }

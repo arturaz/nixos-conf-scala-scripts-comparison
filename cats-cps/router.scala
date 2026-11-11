@@ -12,11 +12,13 @@
 //> using file scala-lib
 
 import cats.effect.{ExitCode, IO}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.{Command, Opts}
 import nixosconf.lib.*
+import nixosconf.lib.given
 import upickle.default.ReadWriter
 
 final case class Args(host: HostName, router: Option[String])
@@ -54,7 +56,7 @@ object Main extends ScriptApp:
       .await
     router.filter(_.script.nonEmpty) match
       case None =>
-        Console[IO].println(show"$host has nothing to set up on the router (router.address isn't set).").awaitIO
+        Console[IO].println(show"$host has nothing to set up on the router (router.address isn't set).").await
       case Some(router) => setUp(root, parsed.host, router.script, parsed.router.getOrElse(router.ssh)).await
     ExitCode.Success
   }
@@ -80,8 +82,8 @@ object Main extends ScriptApp:
             .whenA(code != 0)
         )
     async[ScriptT] {
-      backup(show"Before ./router.scala ${host.name}").awaitIO
-      Console[IO].errorln(show"Setting up $router for ${host.name}...").awaitIO
+      backup(show"Before ./router.scala ${host.name}").await
+      Console[IO].errorln(show"Setting up $router for ${host.name}...").await
       // RouterOS's ssh exits with 0 even when the script fails, so it's judged by its
       // output.
       val out = Proc
@@ -89,7 +91,7 @@ object Main extends ScriptApp:
           show"could not run the script on $router: $out"
         )
         .await
-      Console[IO].println(out).awaitIO
+      Console[IO].println(out).await
       failUnless(out.contains("nixos-conf: "))(show"the script failed on $router (see above).").await
-      if !out.contains("nixos-conf: unchanged") then backup(show"./router.scala ${host.name}").awaitIO
+      if !out.contains("nixos-conf: unchanged") then backup(show"./router.scala ${host.name}").await
     }

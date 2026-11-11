@@ -3,7 +3,8 @@ package nixosconf.lib
 
 import cats.syntax.all.*
 import cats.effect.{IO, Resource}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import sun.misc.Signal
 
 object Proc:
@@ -51,7 +52,7 @@ object Proc:
       stdin: os.ProcessInput = os.Inherit,
       mergeErr: Boolean = false
   )(error: String => String): ScriptT[String] = async[ScriptT] {
-    output(proc, cwd, stdin, mergeErr).awaitIO match
+    output(proc, cwd, stdin, mergeErr).await match
       case (0, out) => out
       case (_, out) => fail[String](error(out)).await
   }
@@ -92,7 +93,7 @@ object Proc:
   def succeedOr(proc: os.proc, cwd: os.Path, env: Map[String, String] = Map.empty)(
       error: Int => String
   ): ScriptT[Unit] = async[ScriptT] {
-    val code = status(proc, cwd, env = env).awaitIO
+    val code = status(proc, cwd, env = env).await
     failUnless(code == 0)(error(code)).await
   }
 

@@ -23,11 +23,13 @@
 
 import cats.data.{EitherT, NonEmptyVector}
 import cats.effect.{ExitCode, IO, Resource}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.{Command, Opts}
 import nixosconf.lib.*
+import nixosconf.lib.given
 import scala.util.matching.Regex
 
 /** A commit (or, for git without jj, the working copy's tree) to check. */
@@ -59,7 +61,7 @@ object Main extends ScriptApp:
   * failure (exit 2).
   */
 def unread[A](message: String): ScriptT[A] = async[ScriptT] {
-  Console[IO].errorln(show"check-secrets: $message; nothing was checked, so this counts as a failure").awaitIO
+  Console[IO].errorln(show"check-secrets: $message; nothing was checked, so this counts as a failure").await
   EitherT.leftT[IO, A](Exit(ExitCode(2)): ScriptError).await
 }
 
@@ -72,7 +74,7 @@ final case class Git(root: os.Path, env: Map[String, String]):
   /** Its output as it is (blobs keep their trailing newlines). */
   def raw(args: String*): EitherT[IO, ScriptError, String] =
     async[ScriptT] {
-      Proc.output(cmd(args), root, env = env, raw = true).awaitIO match
+      Proc.output(cmd(args), root, env = env, raw = true).await match
         case (0, out) => out
         case _        => unread[String](show"`git ${args.mkString(" ")}` failed").await
     }
@@ -99,7 +101,7 @@ object Scan:
         case Some(revs) => Revs(git, revs).pure[ScriptT]
         case None       => unread("found no commit to check")
     def run(proc: os.proc, what: String, env: Map[String, String] = Map.empty) = async[ScriptT] {
-      Proc.output(proc, root, env = env).awaitIO match
+      Proc.output(proc, root, env = env).await match
         case (0, out) => out
         case _        => unread[String](show"$what failed").await
     }
@@ -135,9 +137,9 @@ object Scan:
             async[ScriptT] {
               val withIndex = Git(root, Map("GIT_INDEX_FILE" -> (dir / "index").toString))
               val git = Git(root, Map.empty)
-              withIndex("add", "-A").await
+              val _ = withIndex("add", "-A").await
               val tree = withIndex("write-tree").await
-              val unpushed = if git.hasHead.awaitIO then git("rev-list", "HEAD", "--not", "--remotes").await else ""
+              val unpushed = if git.hasHead.await then git("rev-list", "HEAD", "--not", "--remotes").await else ""
               nonEmpty(git, lines(tree) ++ lines(unpushed)).await
             }
           }
@@ -308,17 +310,17 @@ final case class Scan(root: os.Path, found: Revs):
     )
     val problems = (sops ++ names ++ patternProblems(added)).toVector
     if problems.isEmpty then
-      Console[IO].errorln(show"check-secrets: OK (what ${revs.size} commit(s) not pushed yet add or change)").awaitIO
+      Console[IO].errorln(show"check-secrets: OK (what ${revs.size} commit(s) not pushed yet add or change)").await
       ExitCode.Success
     else
-      Console[IO].errorln("check-secrets: refusing; this repo is public, and these would be pushed:").awaitIO
-      problems.traverse_(p => Console[IO].errorln(show"  $p")).awaitIO
+      Console[IO].errorln("check-secrets: refusing; this repo is public, and these would be pushed:").await
+      problems.traverse_(p => Console[IO].errorln(show"  $p")).await
       Console[IO]
         .errorln(
           "Put secrets into sops (docs/secrets.md); for a commit not pushed yet, remove " +
             "it from that commit (jj edit / jj squash), not just from a later one."
         )
-        .awaitIO
+        .await
       ExitCode.Error
   }
 
@@ -328,12 +330,11 @@ final case class Scan(root: os.Path, found: Revs):
     * working copy's tree relative to HEAD).
     */
   def changedFiles(rev: Rev): ScriptT[Vector[String]] = async[ScriptT] {
-    val readable = git.ok("cat-file", "-e", show"${rev.id}^{tree}").awaitIO
-    if !readable then unread[Unit](show"git can't read ${rev.id}").await
+    if !git.ok("cat-file", "-e", show"${rev.id}^{tree}").await then unread[Unit](show"git can't read ${rev.id}").await
     val files =
-      if isCommit(rev).awaitIO then
+      if isCommit(rev).await then
         git.entries("diff-tree", "-z", "--root", "-m", "-r", "--no-commit-id", "--name-only", "--diff-filter=d", rev.id).await
-      else if git.hasHead.awaitIO then
+      else if git.hasHead.await then
         git.entries("diff-tree", "-z", "-r", "--name-only", "--diff-filter=d", "HEAD", rev.id).await
       else git.entries("ls-tree", "-z", "-r", "--name-only", rev.id).await
     files.distinct.sorted
@@ -341,8 +342,8 @@ final case class Scan(root: os.Path, found: Revs):
 
   /** What to diff a rev against, for the lines it adds. */
   def diffArgs(rev: Rev): ScriptT[Seq[String]] = async[ScriptT] {
-    if isCommit(rev).awaitIO then Seq("--root", "-m", rev.id)
-    else if git.hasHead.awaitIO then Seq("HEAD", rev.id)
+    if isCommit(rev).await then Seq("--root", "-m", rev.id)
+    else if git.hasHead.await then Seq("HEAD", rev.id)
     else
       val empty = git("hash-object", "-t", "tree", "/dev/null").await
       Seq(empty.trim, rev.id)

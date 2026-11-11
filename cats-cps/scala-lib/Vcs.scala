@@ -3,7 +3,8 @@ package nixosconf.lib
 
 import cats.syntax.all.*
 import cats.effect.IO
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 
 object Vcs:
 
@@ -12,7 +13,7 @@ object Vcs:
     */
   def changed(root: os.Path, paths: Seq[String]): ScriptT[String] = async[ScriptT] {
     val proc =
-      if IO.blocking(os.isDir(root / ".jj")).awaitIO then os.proc("jj", "diff", "--name-only", "--", paths)
+      if IO.blocking(os.isDir(root / ".jj")).await then os.proc("jj", "diff", "--name-only", "--", paths)
       else os.proc("git", "status", "--porcelain", "--", paths)
     Proc.outputOr(proc, root)(_ => show"`${proc.commandChunks.mkString(" ")}` failed").await
   }

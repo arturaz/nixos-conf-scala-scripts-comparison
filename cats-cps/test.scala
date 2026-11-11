@@ -13,7 +13,8 @@
 
 import cats.data.{EitherT, NonEmptyVector}
 import cats.effect.{ExitCode, IO, Resource}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.{Argument, Command, Opts}
@@ -43,8 +44,7 @@ final case class KnownTests(all: NonEmptyVector[TestName]):
 
 object KnownTests:
   def discover(root: os.Path): ScriptT[KnownTests] = async[ScriptT] {
-    val files = IO.blocking(os.list(root / "tests" / "checks").filter(f => os.isFile(f) && f.ext == "nix")).awaitIO
-    files
+    IO.blocking(os.list(root / "tests" / "checks").filter(f => os.isFile(f) && f.ext == "nix")).await
       .map(_.baseName).sorted.toVector
       .traverse(AttrName.make.asString(_).map(TestName(_)))
       .flatMap(NonEmptyVector.fromVector(_).toRight("no tests in tests/checks/"))
@@ -163,7 +163,7 @@ final case class Tests(root: os.Path, known: KnownTests):
     */
   val evaluate: ScriptT[Unit] = async[ScriptT] {
     Proc.succeed(os.proc(root / "check-secrets.scala"), root).await
-    Console[IO].errorln("Evaluating the flake...").awaitIO
+    Console[IO].errorln("Evaluating the flake...").await
     Proc.succeed(Nix("flake", "check", "--no-build", flake.unwrap), root).await
   }
 
@@ -177,7 +177,7 @@ final case class Tests(root: os.Path, known: KnownTests):
         async[ScriptT] {
           val link = dir / "driver"
           Proc.succeed(Nix("build", driver.render, "-o", link), root).await
-          ExitCode(Proc.foreground(os.proc(link / "bin" / "nixos-test-driver"), root).awaitIO)
+          ExitCode(Proc.foreground(os.proc(link / "bin" / "nixos-test-driver"), root).await)
         }
       }
 
@@ -191,17 +191,17 @@ final case class Tests(root: os.Path, known: KnownTests):
           known.all
         case Selection.Only(tests) => tests
       schedule match
-        case Schedule.Parallel => tests.parTraverse(runOne).awaitIO
+        case Schedule.Parallel => tests.parTraverse(runOne).await
         // Several at once compete for the CPU, RAM and disk.
-        case Schedule.Sequential => tests.traverse(runOne).awaitIO
+        case Schedule.Sequential => tests.traverse(runOne).await
     }
     // Timed by the wall clock, the evaluation included.
     val (total, results) = EitherT(running.value.timed.map((total, result) => result.map((total, _)))).await
     val lines = results.map { case (test, (outcome, took)) =>
       "  %-20s %-14s %s".format(test.name, outcome.label, Time.format(took))
     } :+ "  %-35s %s".format("in all", Time.format(total))
-    Console[IO].errorln("\nTests:").awaitIO
-    lines.traverse_(Console[IO].errorln).awaitIO
+    Console[IO].errorln("\nTests:").await
+    lines.traverse_(Console[IO].errorln).await
     if results.exists { case (_, (outcome, _)) => outcome == Outcome.Failed } then ExitCode.Error
     else ExitCode.Success
   }

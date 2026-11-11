@@ -14,11 +14,13 @@
 //> using file scala-lib
 
 import cats.effect.{ExitCode, IO}
-import cats.effect.cps.*
+import _root_.cps.*
+import _root_.cps.monads.catsEffect.given
 import cats.effect.std.Console
 import cats.syntax.all.*
 import com.monovore.decline.Command
 import nixosconf.lib.*
+import nixosconf.lib.given
 
 object Main extends ScriptApp:
   val updated = Seq("flake.lock", "packages")
@@ -34,12 +36,12 @@ object Main extends ScriptApp:
     val root = Repo.root.await
     val known = KnownHosts.discover(root).await
     // Only checked here: deploy.scala gets the arguments as they are.
-    Cli.parse(command(known), args).await
+    val _ = Cli.parse(command(known), args).await
     val flake = FlakeRef.of(root).unwrap
     val notDeployed = (what: String) =>
       show"$what (see above). Nothing was deployed; the updated files are left as they " +
         show"are (undo with: jj restore ${updated.mkString(" ")})."
-    Console[IO].errorln("Updating flake.lock...").awaitIO
+    Console[IO].errorln("Updating flake.lock...").await
     Proc
       .succeedOr(Nix("flake", "update", "--flake", flake), root)(_ =>
         "updating flake.lock failed (see above). Nothing was changed."
@@ -47,18 +49,18 @@ object Main extends ScriptApp:
       .await
     // Each package in packages/ declares how it's updated (`passthru.updateScript`:
     // which releases it accepts); the flake's update-packages runs them all.
-    Console[IO].errorln("Updating packages/...").awaitIO
+    Console[IO].errorln("Updating packages/...").await
     Proc.succeedOr(Nix("run", show"$flake#update-packages"), root)(_ => notDeployed("updating packages/ failed")).await
     // All of them (a few minutes; needs KVM); also checks that every host's
     // configuration evaluates.
-    Console[IO].errorln("Running the VM tests...").awaitIO
+    Console[IO].errorln("Running the VM tests...").await
     Proc.succeedOr(os.proc(root / "test.scala"), root)(_ => notDeployed("a test failed")).await
     val changed = Vcs.changed(root, updated).await
     Console[IO]
       .errorln(
         show"Updated (commit them): ${if changed.isEmpty then "nothing" else changed.linesIterator.mkString(" ")}"
       )
-      .awaitIO
+      .await
     // As bash's exec would: Ctrl-C (e.g. at its password prompt) is deploy.scala's.
-    ExitCode(Proc.foreground(os.proc(root / "deploy.scala", args), root).awaitIO)
+    ExitCode(Proc.foreground(os.proc(root / "deploy.scala", args), root).await)
   }
