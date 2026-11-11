@@ -286,14 +286,20 @@ What it costs:
 - **It doesn't compile on current Scala.** cats-effect-cps 0.5.0 (on dotty-cps-async
   0.9.21, and 0.9.23 too) fails on **Scala 3.9.0 and 3.10.1**, even for the README example
   `async[IO] { IO(1).await + IO(2).await }`, with a type mismatch inside its macro
-  (`InferAsyncArg`). It works up to **3.8.4**, so this variant is pinned there. A
-  macro-based syntax layer is a bet that it keeps up with every compiler release.
+  (`InferAsyncArg`). It works up to **3.8.4**, so this variant is pinned there
+  (reported: [cats-effect-direct#321](https://github.com/typelevel/cats-effect-direct/issues/321);
+  cats-effect-cps has since been renamed cats-effect-direct). A macro-based syntax layer is
+  a bet that it keeps up with every compiler release.
 - **Macro quirks you need to learn:**
-  - `x.await.nonEmpty` and `!x.awaitIO` mistype: bind to a `val` first (4 places).
+  - `x.await.nonEmpty` and `!x.awaitIO` mistype with `EitherT` (not with `IO`): bind to
+    a `val` first (4 places).
+    [dotty-cps-async#144](https://github.com/dotty-cps-async/dotty-cps-async/issues/144)
   - Looping over a `Seq` with an `await` inside is ambiguous (two built-in instances
-    match), but a `Vector` works (3 `.toVector`s).
+    match), but a `List` or `Vector` works (3 `.toVector`s).
+    [dotty-cps-async#142](https://github.com/dotty-cps-async/dotty-cps-async/issues/142)
   - The expansion trips `-Wunused:explicits` ("unused explicit parameter" on every
     `async`), like kyo-direct's.
+    [dotty-cps-async#143](https://github.com/dotty-cps-async/dotty-cps-async/issues/143)
   - An `await` inside a `Resource.use` lambda needs its own nested `async`.
 - **No less plumbing, just different:** 207 `.await`/`.awaitIO` against `EitherT`'s 157
   lifting calls. What it removes is nesting and the combinator vocabulary for control flow.
@@ -450,7 +456,9 @@ threads and `boundary`/`break`.
     (`destroyOnExit`). Spawning from a finalizer while the JVM shuts down (an
     `ssh -O exit` cleanup on Ctrl-C) then throws "Shutdown in progress". Since our
     resource already kills the process, `destroyOnExit = false` fixes it. This was a bug
-    in the original scripts; the fix is in every os-lib variant.
+    in the original scripts; the fix is in every os-lib variant. Reported as
+    [os-lib#456](https://github.com/com-lihaoyi/os-lib/issues/456), with a fix in
+    [os-lib#457](https://github.com/com-lihaoyi/os-lib/pull/457).
 - **JSON:** upickle, kyo-schema-json and zio-json are all fine for this.
 
 ## Verdict
