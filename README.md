@@ -143,6 +143,11 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
   - **Fallback: plain `EitherT` for-comprehensions** (the `cats-effect/` variant), which
     needs no macro. The explicit lifting that looks like noise makes a mistake visible.
     The plumbing is the price, and with an LLM typing it, a small one.
+  - **The fallback is per block, not all or nothing.** An `async[ScriptT] { … }` block is
+    just a `ScriptT` value, the same type a for-comprehension produces. Where the macro
+    mistypes or chokes on something, that one function can be written as a
+    for-comprehension, and it composes with the direct-style code around it unchanged.
+    So betting on the macro is cheap to undo.
 - **The strongest alternative: native ZIO**, the other stupidity-resistant option. Typed errors with no
   transformer, `catchAll` that only sees `E`, defects kept apart. Expect to wrap zio-cli
   and to use thinner file and process libraries.
@@ -371,7 +376,9 @@ What it still costs, on 1.4.0:
 In short: it reads better than `EitherT` for-comprehensions with the same error model,
 and on a current dotty-cps-async it works on the current compiler. What's left is the
 usual price of a macro: some quirks, and the dependence on it keeping up. If the macro
-stays solid, this is the variant I'd pick; plain `EitherT` is the fallback.
+stays solid, this is the variant I'd pick; plain `EitherT` is the fallback, and since
+both produce the same `ScriptT` values, a block the macro can't handle can be written as
+a for-comprehension on its own, without touching the rest.
 
 ### Ox: no effect runtime, but effects don't show in types
 
