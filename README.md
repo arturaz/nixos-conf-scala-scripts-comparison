@@ -118,9 +118,10 @@ What actually separated the seven. Code size and speed don't: see the
   exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
 - **If you want the strongest guarantees with the least code in an effect system:
   native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
-- **Ox: no effect system, and that's why I won't use it.** Nothing in a type says a
-  function has effects, and that's the main thing I want from an effect system; it's why
-  I stay on `IO` despite `EitherT`'s plumbing. Its other trade-offs are `.ok()`'s
+- **Ox: no effect system, and that's why I won't use it.** Steps aren't values (no
+  referential transparency), and nothing in a type says a function has effects. Those are
+  the main things I want from an effect system, and why I stay on `IO` despite `EitherT`'s
+  plumbing. Its other trade-offs are `.ok()`'s
   catch-all hazard and interruption only at blocking calls. If effect tracking doesn't
   matter to you, it works well for CLI scripts like these: plain code, the same
   libraries, no runtime.
@@ -327,21 +328,27 @@ What to know:
   still runs the plain code after it. Under `timeout -s INT`, ssh exited first, and the
   script printed "could not connect" before exiting 130. Here that's cosmetic; for code
   with side effects between blocking calls it could matter.
-- **You lose** referential transparency and the Monad combinator vocabulary. For
-  short-lived scripts that mostly spawn processes and wait, I didn't miss them.
-- **Nothing in a signature says a function has effects. This is the deal-breaker for me.**
-  `def isBuilt(…): Boolean` runs `nix`; `def ok(args: String*): Boolean` runs `git`. The
-  types only show:
-  - errors (`Either[ScriptError, A]`, with `.ok()` marking where things can fail);
-  - concurrency scope (`using Ox`, needed to fork or register cleanup, but not to run a
-    process, read a file or print).
+- **No referential transparency, and no effects in signatures. These are the
+  deal-breakers for me.**
+  - **Referential transparency:** an `IO` is a value. You can pass it around, `memoize`
+    it, retry it, race it, or decide not to run it, and the Monad combinators work on it.
+    An Ox step runs when it's called; there's no value to hold on to.
+  - **Effects in signatures:** `def isBuilt(…): Boolean` runs `nix`;
+    `def ok(args: String*): Boolean` runs `git`. The types only show:
+    - errors (`Either[ScriptError, A]`, with `.ok()` marking where things can fail);
+    - concurrency scope (`using Ox`, needed to fork or register cleanup, but not to run
+      a process, read a file or print).
 
-  So you can't tell a pure helper from one that ssh's into a machine, and refactoring
-  can't rely on the difference. In the other six variants, `IO`/`ZIO`/`< Effects` in the
-  return type is exactly that signal. A marker capability (`using Effects`) would only be a
-  convention, since nothing stops unmarked code from calling `os.proc`. Scala 3's
-  experimental capture checking aims to make direct-style effects show up in types, but
-  libraries like os-lib aren't annotated for it yet.
+    So you can't tell a pure helper from one that ssh's into a machine. To be fair, no
+    library here enforces this. Nothing stops `os.proc(…).call()` inside a plain
+    `def f: Int` in the `IO` variants either; effects in types are a convention
+    everywhere. The difference is who keeps the convention. With an effect library, the
+    whole ecosystem does: effects are sequenced through the type, and libraries hand you
+    `IO`s, so in practice the signature tells the truth. With Ox, nothing uses or honors
+    a marker (say, a `using Effects` capability), so you'd have to invent the convention
+    and keep it alone. Scala 3's experimental capture checking aims to make direct-style
+    effects show up in types for real, but libraries like os-lib aren't annotated for it
+    yet.
 
 ### ZIO, native stack: the cleanest effectful code
 
