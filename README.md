@@ -1,8 +1,15 @@
-# One set of real Scala scripts, five effect stacks
+# One set of real Scala scripts, seven ways
 
-The same ~1,350 lines of Scala 3 written five ways: **cats-effect** (with `EitherT`),
-**cats-effect + cats-mtl**, **kyo**, **ZIO** (native ecosystem) and **ZIO with cats
-interop**. Each variant was run through the same checks and gives the same results, so the
+The same ~1,350 lines of Scala 3 written seven ways:
+- **cats-effect** (with `EitherT`);
+- **cats-effect + cats-mtl**;
+- **cats-effect + cats-effect-cps** (async/await over `EitherT`);
+- **kyo**;
+- **ZIO** (native ecosystem);
+- **ZIO with cats interop**;
+- **Ox**: no effect runtime, direct style on virtual threads.
+
+Each variant was run through the same checks and gives the same results, so the
 comparison is about the code and the libraries, not about features.
 
 It's not a benchmark or a toy. These are the scripts that manage my NixOS machines, and
@@ -11,7 +18,7 @@ they do the unglamorous things CLI tools do:
 | script | what it does | exercises |
 |---|---|---|
 | `deploy.scala` | evaluates a NixOS configuration, builds it on a remote machine over ssh, activates it with sudo | a scoped ssh session (ControlMaster) cleaned up on exit, a memoized password prompt, many subprocesses, JSON from `nix eval`, a long chain of steps that can fail, each with its own message |
-| `test.scala` | runs NixOS VM tests in parallel or one by one, then prints a summary | mutually exclusive CLI modes, `parTraverse`, timing |
+| `test.scala` | runs NixOS VM tests in parallel or one by one, then prints a summary | mutually exclusive CLI modes, parallelism, timing |
 | `check-secrets.scala` | refuses to let a secret be pushed (scans unpushed commits) | lots of `git`/`jj` calls; must fail closed (exit 2 if it couldn't look) |
 | `router.scala`, `router-backup.scala` | apply a firewall script to a MikroTik router, back its config up into git | ssh, scp, git, a keyring, sops |
 | `upgrade.scala` | update, test, then hand the terminal to `deploy.scala` | Ctrl-C belonging to the child process |
@@ -25,14 +32,17 @@ Shared code is in each variant's `scala-lib/`: the entry point (`Script.scala`),
 |---|---|---|
 | [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline, and what my configuration uses: `IO[Either[ScriptError, A]]` composed with `EitherT` |
 | [`cats-mtl/`](cats-mtl) | the same + cats-mtl 1.7.0 | only the errors: plain `IO[A]` with `(using Raise[IO, ScriptError])`, `Handle.allow` at the top |
+| [`cats-cps/`](cats-cps) | the same + cats-effect-cps 0.5.0 (dotty-cps-async) | only the syntax: the same `EitherT` errors, written as `async[ScriptT] { … .await … }`. **Scala 3.8.4**, see below |
 | [`kyo/`](kyo) | kyo 1.0.0-RC7: kyo-core, kyo-direct, kyo-system, kyo-schema-json, kyo-case-app | everything: kyo effects in direct style, kyo-system for processes and files, case-app for the CLI |
 | [`zio/`](zio) | zio 2.1.27, zio-streams, zio-process 0.8.1, zio-nio 2.0.2, zio-cli 0.8.2, zio-json 1.1.2 | everything: the native ZIO stack |
 | [`zio-interop/`](zio-interop) | zio 2.1.27 + zio-interop-cats 23.1.0.15, decline, os-lib, upickle | only the runtime: ZIO's `IO[ScriptError, A]` instead of cats-effect, with cats syntax (`traverse_`, `whenA`, `ifM`, `parTraverse`) running on ZIO |
+| [`ox/`](ox) | Ox 1.1.0, decline, os-lib, upickle (cats-core only for decline and `show`) | no effect runtime: plain blocking code on virtual threads, errors as `Either` written with `either { … .ok() … }`, Ctrl-C and resources via `OxApp` and scopes |
 
-All of them use Scala 3.9.0 on JDK 27, `-Werror`, and [yantl](https://github.com/arturaz/yantl)
-for newtypes. The style is the same throughout: parse, don't validate; enums for options;
-expected failures are values; a thrown exception is a bug; and `show"..."` instead of
-`s"..."`, so only values with a deliberate rendering go into messages.
+All of them use JDK 27, `-Werror`, and [yantl](https://github.com/arturaz/yantl) for
+newtypes. All use Scala 3.9.0 except `cats-cps/`, which needs 3.8.4. The style is the same
+throughout: parse, don't validate; enums for options; expected failures are values; a
+thrown exception is a bug; and `show"..."` instead of `s"..."`, so only values with a
+deliberate rendering go into messages.
 
 ### Reading it
 
@@ -40,7 +50,7 @@ The most useful thing to do is to diff two variants:
 
 ```sh
 diff -ru cats-effect zio
-diff -u cats-effect/deploy.scala cats-mtl/deploy.scala
+diff -u cats-effect/deploy.scala ox/deploy.scala
 ```
 
 The variants differ only in what their libraries make different. Comments, messages and
@@ -50,7 +60,7 @@ structure are kept as close as possible, so a diff shows the cost of the stack.
 
 Each script starts with a bash/Scala header that hands it to `scala-lib/run`. That compiles
 it once with [scala-cli](https://scala-cli.virtuslab.org/) into an assembly jar plus a JDK
-AOT cache (in `~/.cache/nixos-conf/scala/`), then starts it in ~0.15 s. The scripts find
+AOT cache (in `~/.cache/nixos-conf/scala/`), then starts it in 0.1–0.2 s. The scripts find
 their "repository" as the nearest `flake.nix` above them, so this repo has a placeholder
 `flake.nix`, `hosts/example/` and `tests/checks/example.nix`. With them these work in every
 variant:
@@ -70,7 +80,7 @@ switching between variants recompiles.
 Each variant was ported from the cats-effect version, then run against the real
 repository:
 
-- **check-secrets:** passes on the real repository and catches a planted token. All five
+- **check-secrets:** passes on the real repository and catches a planted token. All seven
   give **byte-identical findings** on the same planted secrets, and exit 2 when there's no
   repository to look at.
 - **test.scala:** `-l`, `-e` (`nix flake check`), two tests in parallel, and a forced real
@@ -89,51 +99,57 @@ repository:
 
 ### Code size (non-blank, non-comment lines)
 
-| | cats-effect | cats-mtl | kyo | zio | zio-interop |
-|---|---:|---:|---:|---:|---:|
-| check-secrets.scala | 307 | 304 | **278** | 286 | 299 |
-| deploy.scala | 337 | 327 | 340 | **293** | 320 |
-| router-backup.scala | 192 | **183** | 185 | 194 | **183** |
-| router.scala | 65 | 65 | 65 | **59** | 64 |
-| test.scala | 168 | 165 | 166 | **158** | 163 |
-| upgrade.scala | 39 | 39 | 36 | **34** | 38 |
-| **scripts** | 1108 | 1083 | 1070 | **1024** | 1067 |
-| scala-lib | 286 | 282 | 333 | 320 | **280** |
-| **total** | 1394 | 1365 | 1403 | **1344** | 1347 |
+| | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| check-secrets.scala | 307 | 304 | 293 | 278 | 286 | 299 | **273** |
+| deploy.scala | 337 | 327 | 330 | 340 | **293** | 320 | 302 |
+| router-backup.scala | 192 | 183 | 180 | 185 | 194 | 183 | **173** |
+| router.scala | 65 | 65 | 70 | 65 | **59** | 64 | 64 |
+| test.scala | 168 | 165 | 172 | 166 | **158** | 163 | 165 |
+| upgrade.scala | 39 | 39 | 41 | 36 | **34** | 38 | 38 |
+| **scripts** | 1108 | 1083 | 1086 | 1070 | 1024 | 1067 | **1015** |
+| scala-lib | 286 | 282 | 294 | 333 | 320 | 280 | **268** |
+| **total** | 1394 | 1365 | 1380 | 1403 | 1344 | 1347 | **1283** |
 
 What adds up, per variant:
 
-| | cats-effect | cats-mtl | kyo | zio | zio-interop |
-|---|---|---|---|---|---|
-| per-step plumbing | **157** `.toEitherT` / `.liftTScriptError` / `.value` / `EitherT(…)` | none | 248 `.now` | none | none |
-| per-definition annotations | – | 54 `(using CanFail)` | 76 `(using Frame)` | – | – |
-| other | – | – | – | 26 `.orDie` (zio-nio's typed IOExceptions) | 4 type ascriptions (see below) |
+| | per-step plumbing | per-definition | other |
+|---|---|---|---|
+| cats-effect | **157** `.toEitherT` / `.liftTScriptError` / `.value` / `EitherT(…)` | – | – |
+| cats-mtl | none | 54 `(using CanFail)` | – |
+| cats-cps | 117 `.await` + 90 `.awaitIO` | 44 `async[ScriptT] { … }` | 3 `.toVector` and 4 `val` bindings to dodge macro quirks |
+| kyo | 248 `.now` | 76 `(using Frame)` | – |
+| zio | none | – | 26 `.orDie` (zio-nio's typed IOExceptions) |
+| zio-interop | none | – | 7 `.orDie`, 4 type ascriptions |
+| ox | 93 `.ok()` | 25 `either { … }` | – |
 
 For reference, the version before `EitherT`, which threw its `Fail`/`Exit` as exceptions,
 was 1345 lines.
 
 ### Build and runtime
 
-Measured on one machine (AMD Ryzen 9 7950X, 64 GB, JDK 27.0.1), all in the same session,
-with the AOT cache. Startup and run times are averages of 12 runs; compile times are 2
-runs, without scala-cli's compile server. Treat differences under ~10% as noise.
+Measured on one machine (AMD Ryzen 9 7950X, 64 GB, JDK 27.0.1), all seven in the same
+session, with the AOT cache. Startup and run times are averages of 12 runs; compile times
+are 2 runs, without scala-cli's compile server. Treat differences under ~10% as noise.
 
-| | cats-effect | cats-mtl | kyo | zio | zio-interop |
-|---|---:|---:|---:|---:|---:|
-| cold compile, check-secrets.scala | 4.06 s | 4.06 s | 5.35 s | **3.77 s** | 4.09 s |
-| cold compile, deploy.scala | 4.30 s | 4.18 s | 6.0 s | **4.04 s** | 4.39 s |
-| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 29.1 MB | **21.3 MB** | 39.3 MB |
-| `test.scala -l` wall time | 0.140 s | **0.134 s** | 0.208 s | 0.153 s | 0.160 s |
-| `test.scala --help` wall time | 0.133 s | 0.138 s | **0.089 s** | 0.145 s | 0.130 s |
-| `check-secrets.scala` on a small repo (≈10 git calls) | 0.331 s | **0.329 s** | 0.429 s | 0.367 s | 0.360 s |
-| `check-secrets.scala` max RSS | 91 MB | 90 MB | 130 MB | **89 MB** | 94 MB |
+| | cats-effect | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cold compile, check-secrets.scala | 3.99 s | 3.97 s | 4.86 s | 5.35 s | **3.80 s** | 4.13 s | 3.95 s |
+| cold compile, deploy.scala | 4.27 s | 4.24 s | 5.25 s | 6.04 s | **4.04 s** | 4.41 s | 4.18 s |
+| assembly jar (test.scala) | 25.0 MB | 25.1 MB | 26.2 MB | 29.1 MB | **21.3 MB** | 39.3 MB | 22.6 MB |
+| `test.scala -l` wall time | 0.140 s | 0.136 s | 0.140 s | 0.205 s | 0.152 s | 0.160 s | **0.089 s** |
+| `test.scala --help` wall time | 0.130 s | 0.135 s | 0.139 s | **0.089 s** | 0.149 s | 0.130 s | **0.089 s** |
+| `check-secrets.scala` on a small repo (≈10 git calls) | 0.335 s | 0.330 s | 0.339 s | 0.430 s | 0.365 s | 0.353 s | **0.268 s** |
+| `check-secrets.scala` max RSS | 88 MB | 91 MB | 92 MB | 130 MB | 87 MB | 92 MB | **75 MB** |
 
-Every one of these is far below what a user of these scripts would notice next to
-`nix eval` (seconds) or a VM test (minutes). **Performance doesn't decide anything here.**
+All of these are far below what a user of these scripts would notice next to `nix eval`
+(seconds) or a VM test (minutes); performance doesn't decide anything here. Still, the
+pattern is clear: **with no effect runtime to start, Ox is the fastest and lightest**,
+~50 ms faster to start than the cats-effect and ZIO variants.
 
 ## Findings
 
-### The same steps, five ways
+### The same steps, seven ways
 
 The start of `deploy.scala`'s main sequence:
 
@@ -161,6 +177,16 @@ def steps(using CanFail): IO[Unit] =
     _ <- copyPlasmaFiles(rootAccess).whenA(hasPlasma)
     …
   yield ()
+
+// cats-cps: EitherT, in direct style (.await for EitherT, .awaitIO for IO)
+def steps: ScriptT[Unit] = async[ScriptT] {
+  val connected = Proc.status(onTarget("true"), root).awaitIO
+  failUnless(connected == 0)(show"could not connect to $target. …").await
+  for file <- machineFiles.toVector do copyMachineFile(file).await
+  val rootAccess = becomeRoot.value.memoize.awaitIO
+  if IO.blocking(os.isDir(hostDir / "plasma")).awaitIO then copyPlasmaFiles(rootAccess).await
+  …
+}
 
 // kyo: direct style; the effect row carries the errors
 def steps(using Frame): Unit < Script =
@@ -196,6 +222,16 @@ def steps: IO[ScriptError, Unit] =
     _ <- copyPlasmaFiles(rootAccess).whenA(hasPlasma)
     …
   yield ()
+
+// ox: plain code; Either for errors, .ok() to unwrap or leave the block
+def steps: Either[ScriptError, Unit] = either {
+  val connected = Proc.status(onTarget("true"), root)
+  failUnless(connected == 0)(show"could not connect to $target. …").ok()
+  machineFiles.foreach(copyMachineFile(_).ok())
+  lazy val rootAccess = becomeRoot
+  if os.isDir(hostDir / "plasma") then copyPlasmaFiles(rootAccess).ok()
+  …
+}
 ```
 
 ### cats-effect + `EitherT`: what I'm sticking with
@@ -238,10 +274,70 @@ types don't catch and which are documented on `CanFail`:
 For a CLI with one `allow` at the top this is easily safe. On a big team I'd want a lint
 for catch-all handlers.
 
-### ZIO, native stack: the cleanest script code
+### cats-effect-cps: `EitherT` in direct style, but a fragile macro
 
-- **Code:** typed errors without transformers, and plain for-comprehensions. The scripts
-  came out shortest (deploy.scala 13% shorter than the baseline).
+The idea: keep `EitherT`'s sound error model and only change the syntax. `async[ScriptT]
+{ … }` works for any cats `Monad`, so `EitherT[IO, ScriptError, *]` included. A
+`CpsMonadConversion[IO, ScriptT]` plus a small `.awaitIO` extension lets plain `IO`s be
+awaited without lifting. Then `if`, `match` and `for` loops over awaited values are
+ordinary Scala, and `ifM`, `whenA` and `(for … yield …).value` disappear.
+
+What it costs:
+- **It doesn't compile on current Scala.** cats-effect-cps 0.5.0 (on dotty-cps-async
+  0.9.21, and 0.9.23 too) fails on **Scala 3.9.0 and 3.10.1**, even for the README example
+  `async[IO] { IO(1).await + IO(2).await }`, with a type mismatch inside its macro
+  (`InferAsyncArg`). It works up to **3.8.4**, so this variant is pinned there. A
+  macro-based syntax layer is a bet that it keeps up with every compiler release.
+- **Macro quirks you need to learn:**
+  - `x.await.nonEmpty` and `!x.awaitIO` mistype: bind to a `val` first (4 places).
+  - Looping over a `Seq` with an `await` inside is ambiguous (two built-in instances
+    match), but a `Vector` works (3 `.toVector`s).
+  - The expansion trips `-Wunused:explicits` ("unused explicit parameter" on every
+    `async`), like kyo-direct's.
+  - An `await` inside a `Resource.use` lambda needs its own nested `async`.
+- **No less plumbing, just different:** 207 `.await`/`.awaitIO` against `EitherT`'s 157
+  lifting calls. What it removes is nesting and the combinator vocabulary for control flow.
+- **Slower compiles:** about 1 s more per script than the baseline.
+
+In short: it reads better than `EitherT` for-comprehensions, but it ties you to a macro
+that broke on the current compiler. I wouldn't rely on it until that's fixed.
+
+### Ox: no effect runtime, and it held up
+
+The most different approach, and the most surprising result:
+- **No effect type at all.** Steps are plain methods that block (on virtual threads). Errors
+  are `Either[ScriptError, A]` written as `either { … step.ok() … }` (Scala 3's
+  `boundary`/`break` underneath).
+- **Everything just works:**
+  - Resources tie to a scope (`useInScope`, `releaseAfterScope`).
+  - Parallel tests are `par(tests.map(t => () => runOne(t)))`.
+  - The memoized password prompt is a `lazy val`.
+  - Timing is a five-line helper.
+  - `OxApp` handles Ctrl-C by interrupting the main fork and running the finalizers.
+- **The best numbers:** the shortest code (1283 lines), the fastest startup (0.089 s), the
+  fastest check-secrets run (0.268 s), and the least memory (75 MB).
+- **decline, os-lib and upickle** work unchanged, since they never needed an effect type.
+
+What to know:
+- **Exit code on Ctrl-C:** `OxApp` exits with **0** by default
+  (`interruptedExitCode = ExitCode.Success`), so `ScriptApp` overrides it to 130.
+- **`.ok()` is a `break`, which is an exception.** A catch-all (`catch NonFatal`, `Try`)
+  around it swallows it, the same hazard cats-mtl has. `.ok()` also can't cross into
+  another fork's thread. The one catch-all that existed (`secret-tool` failing to start)
+  was narrowed to `IOException`.
+- **Interruption is only noticed at blocking calls.** With cats-effect, cancellation stops
+  the program between any two steps. With Ox, a step that finished just before Ctrl-C
+  still runs the plain code after it. Under `timeout -s INT`, ssh exited first, and the
+  script printed "could not connect" before exiting 130. Here that's cosmetic; for code
+  with side effects between blocking calls it could matter.
+- **You lose** referential transparency and the Monad combinator vocabulary. For
+  short-lived scripts that mostly spawn processes and wait, I didn't miss them.
+
+### ZIO, native stack: the cleanest effectful code
+
+- **Code:** typed errors without transformers, and plain for-comprehensions. Among the
+  effect systems, the scripts came out shortest (deploy.scala 13% shorter than the
+  baseline).
 - **Cleanup:** `ZIO.acquireRelease`/`ZIO.scoped` handle resources, and zio-nio's
   `createTempDirectoryScoped` replaces a hand-written acquire/release pair.
 - **Ctrl-C:** works out of the box. `ZIOAppDefault`'s shutdown hook interrupts the program
@@ -291,8 +387,7 @@ If you go ZIO, go native.
 ### kyo: the nicest syntax, the roughest edges (1.0.0-RC7)
 
 - **Syntax:** direct style (`direct { … .now }`) reads like ordinary code. The effect row
-  (`Async & Abort[Stop] & PathWrite`) is genuinely expressive. check-secrets came out
-  shortest in kyo.
+  (`Async & Abort[Stop] & PathWrite`) is genuinely expressive.
 - **Release candidate:** it shows. I hit several bugs and gaps while porting and reported
   them (below). The workarounds are in the code:
   - **Ctrl-C:** kyo-case-app's runner exits without waiting for finalizers, so
@@ -302,8 +397,8 @@ If you go ZIO, go native.
     for unrendered values needed a macro.
   - **Compiler settings:** `-Wunused` can't be `all` (kyo-direct's expansion triggers
     false warnings), and two `-Wconf`s silence warnings from kyo's inlined code.
-- **Cost:** the slowest compiles (35–40% over cats-effect), the most memory on
-  check-secrets, a bigger jar, and the slowest real runs (+60–90 ms).
+- **Cost:** the slowest compiles (35–40% over cats-effect), the most memory on check-secrets,
+  a bigger jar, and the slowest real runs (+60–90 ms).
 - **CLI:** case-app only parses options, so positional arguments and env vars are parsed
   by hand.
 
@@ -326,6 +421,20 @@ And comments with data from this project on two existing issues:
 - [#1991](https://github.com/getkyo/kyo/issues/1991) (Scope: no backpressure on abnormal exit): in a CLI, the late release becomes a lost one; a temporary directory was left behind on every Ctrl-C. The workaround is in `kyo/scala-lib/Script.scala`.
 - [#2206](https://github.com/getkyo/kyo/issues/2206) (JMH dependency of kyo-kernel): JMH, jopt-simple, commons-math3 and ASM are 1,847 of the assembly jar's ~14,000 entries, about 9% of its uncompressed size.
 
+### Macro-based direct style has a pattern
+
+Three of the variants use, or were tried with, a macro that rewrites direct-style code:
+kyo-direct, dotty-cps-async (cats-effect-cps), and zio-direct (tried, not included). All
+three:
+- trip `-Wunused` with false warnings from their expansion;
+- have edge cases where ordinary-looking code (a chained call, a method on an awaited
+  value) crashes or mistypes;
+- tie you to how well they keep up with the compiler (dotty-cps-async breaks on 3.9;
+  zio-direct's last release is from February 2023).
+
+Ox gets the same "plain code" feel with no macro at all, just blocking calls on virtual
+threads and `boundary`/`break`.
+
 ### The rest of the stack matters as much as the effect system
 
 - **CLI:**
@@ -334,27 +443,27 @@ And comments with data from this project on two existing issues:
   - **case-app:** options only.
   - **zio-cli:** usable behind a wrapper (see above).
 - **Processes and files:**
-  - **os-lib:** the nicest API.
+  - **os-lib:** the nicest API, and it works the same with or without an effect system.
   - **kyo-system:** good.
   - **zio-process/zio-nio:** adequate.
   - os-lib's `spawn` registers a JVM shutdown hook per process by default
     (`destroyOnExit`). Spawning from a finalizer while the JVM shuts down (an
     `ssh -O exit` cleanup on Ctrl-C) then throws "Shutdown in progress". Since our
     resource already kills the process, `destroyOnExit = false` fixes it. This was a bug
-    in the original scripts; the fix is in `cats-effect/`, `cats-mtl/` and
-    `zio-interop/`.
+    in the original scripts; the fix is in every os-lib variant.
 - **JSON:** upickle, kyo-schema-json and zio-json are all fine for this.
 
 ## Verdict
 
-| | cats-effect + EitherT | cats-mtl | kyo | zio | zio-interop |
-|---|---|---|---|---|---|
-| script readability | ★★☆ | ★★★ | ★★★ | ★★★ | ★★☆ |
-| typed errors | sound, noisy | by convention (no catch-alls, no escaping) | sound | sound | sound, but invariance traps |
-| Ctrl-C and cleanup | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in |
-| surrounding libraries | best | best | OK | weak CLI, thin file/process libs | best |
-| compile / jar | medium | medium | slowest / bigger | fastest / smallest | medium / biggest |
-| maturity | stable | stable | RC | stable (zio-nio stale) | stable |
+| | cats-effect + EitherT | cats-mtl | cats-cps | kyo | zio | zio-interop | ox |
+|---|---|---|---|---|---|---|---|
+| script readability | ★★☆ | ★★★ | ★★★ | ★★★ | ★★★ | ★★☆ | ★★★ |
+| typed errors | sound, noisy | by convention (no catch-alls, no escaping) | sound | sound | sound | sound, but invariance traps | by convention (no catch-alls around `.ok()`) |
+| Ctrl-C and cleanup | built in | built in | built in | ~50 lines of workaround | built in (+ `exit` for codes) | built in | built in (+ exit code 130 by hand) |
+| surrounding libraries | best | best | best | OK | weak CLI, thin file/process libs | best | best |
+| compile / jar | medium | medium | slower / medium | slowest / bigger | fastest / smallest | medium / biggest | fast / small |
+| startup / memory | medium | medium | medium | slowest / most | medium | medium | **fastest / least** |
+| maturity | stable | stable | **broken on Scala ≥ 3.9** | RC | stable (zio-nio stale) | stable | stable |
 
 - **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
   (decline, os-lib), every Monad combinator, and typed errors that are plain values, so
@@ -362,12 +471,16 @@ And comments with data from this project on two existing issues:
 - **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
   keeps all of that and drops the plumbing. In exchange, typed errors become hidden
   exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
-- **If you want the strongest guarantees with the least code: native ZIO.** Expect to
-  wrap zio-cli and to use thinner file and process libraries.
-- **Mixing ZIO with cats syntax** works, but runs into invariance traps and produces the
-  largest jar.
-- **kyo** has the most interesting design and the nicest-reading code. For something
-  you maintain, I'd wait for 1.0.
+- **For CLI scripts like these, Ox is a serious contender.** It's the least code, the
+  fastest, and the same libraries, with no effect system at all. The trade-offs are
+  `.ok()`'s catch-all hazard and interruption only at blocking calls.
+- **If you want the strongest guarantees with the least code in an effect system:
+  native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
+- **Avoid for now:**
+  - **cats-effect-cps:** a nice idea that doesn't compile on current Scala.
+  - **ZIO with cats syntax:** it runs into invariance traps and produces the largest jar.
+  - **kyo:** the most interesting design and the nicest-reading code, but for something
+    you maintain, I'd wait for 1.0.
 
 ## How this was made
 
