@@ -34,9 +34,9 @@ Shared code is in each variant's `scala-lib/`: the entry point (`Script.scala`),
 
 | directory | stack | what's different from `cats-effect/` |
 |---|---|---|
-| [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline, and what my configuration uses: `IO[Either[ScriptError, A]]` composed with `EitherT` |
+| [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline: `IO[Either[ScriptError, A]]` composed with `EitherT` |
 | [`cats-mtl/`](cats-mtl) | the same + cats-mtl 1.7.0 | only the errors: plain `IO[A]` with `(using Raise[IO, ScriptError])`, `Handle.allow` at the top |
-| [`cats-cps/`](cats-cps) | the same + cps-async-connect-cats-effect 1.4.0 (dotty-cps-async 1.4.0) | only the syntax: the same `EitherT` errors, written as `async[ScriptT] { … .await … }` |
+| [`cats-cps/`](cats-cps) | the same + cps-async-connect-cats-effect 1.4.0 (dotty-cps-async 1.4.0) | only the syntax: the same `EitherT` errors, written as `async[ScriptT] { … .await … }`. What my configuration uses now |
 | [`kyo/`](kyo) | kyo 1.0.0-RC7: kyo-core, kyo-direct, kyo-system, kyo-schema-json, kyo-case-app | everything: kyo effects in direct style, kyo-system for processes and files, case-app for the CLI |
 | [`zio/`](zio) | zio 2.1.27, zio-streams, zio-process 0.8.1, zio-nio 2.0.2, zio-cli 0.8.2, zio-json 1.1.2 | everything: the native ZIO stack |
 | [`zio-interop/`](zio-interop) | zio 2.1.27 + zio-interop-cats 23.1.0.15, decline, os-lib, upickle | only the runtime: ZIO's `IO[ScriptError, A]` instead of cats-effect, with cats syntax (`traverse_`, `whenA`, `ifM`, `parTraverse`) running on ZIO |
