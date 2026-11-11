@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Starts a .scala script quickly: `scala-lib/run <script.scala> [args...]`, which is
+# what each script's first two lines (a bash/Scala polyglot header) do.
+#
+# scala-cli itself spends ~300 ms per run checking whether to recompile, and a cold
+# JVM with ZIO another few hundred ms. Instead, when the script, scala-lib/ or this
+# file change (a hash of them), this builds, once:
+#   - an assembly jar (scala-cli --power package --assembly),
+#   - an AOT cache (JDK 25+ -XX:AOTCacheOutput: classes loaded and linked ahead of
+#     time; it needs a jar, not a classes directory), from a training run of
+#     `<script> --help` (every script parses its arguments with Cli.parse),
+#   - the path of the java scala-cli picked (scala-lib/project.scala's `using jvm`),
+# into ${XDG_CACHE_HOME:-~/.cache}/nixos-conf/scala/<script>/, and from then on runs
+# java on them directly. See README.md's "Scripts".
+set -euo pipefail
+
+script=$(realpath "$1")
+shift
+self=$(realpath "${BASH_SOURCE[0]}")
+lib=$(dirname "$self")
+name=$(basename "$script" .scala)
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/nixos-conf/scala/$name"
+hash=$(cat "$script" "$lib"/*.scala "$self" | sha256sum | cut -c1-16)
+jar=$cache/$hash.jar
+aot=$cache/$hash.aot
+javaFile=$cache/$hash.java # written last: the build is complete
+
+opts=(
+  # Short-lived glue: C1 only, the simplest GC, no perf data file.
+  -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData
+  # Scala 3's lazy vals use sun.misc.Unsafe, which JDK 24+ warns about on every run.
+  --sun-misc-unsafe-memory-access=allow
+  # How Repo.root finds the repository (scala-cli sets it when it runs a script).
+  "-Dscala.sources=$script"
+)
+
+java=$(cat "$javaFile" 2>/dev/null || true)
+if [[ ! -x $java ]]; then
+  echo "Compiling $name.scala (only after a change)..." >&2
+  mkdir -p "$cache"
+  tmp=$(mktemp -d "$cache/.build.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+  sc=(--suppress-directives-in-multiple-files-warning --quiet)
+  scala-cli --power package "${sc[@]}" "$script" --assembly --preamble=false -o "$tmp/app.jar" -f
+  java=$(scala-cli run "${sc[@]}" --command "$script" | head -1)
+  rm -f "$cache"/*.jar "$cache"/*.aot "$cache"/*.java
+  # In place first: the AOT cache records the jar's path (and is ignored elsewhere).
+  mv "$tmp/app.jar" "$jar"
+  # A failed training run only costs the speed-up.
+  "$java" "${opts[@]}" "-XX:AOTCacheOutput=$tmp/app.aot" -jar "$jar" --help \
+    >/dev/null 2>&1 || echo "warning: no AOT cache for $name.scala; it will start slower" >&2
+  if [[ -f $tmp/app.aot ]]; then mv "$tmp/app.aot" "$aot"; fi
+  echo "$java" >"$javaFile"
+  rm -rf "$tmp" # exec below skips the EXIT trap
+  trap - EXIT
+fi
+
+if [[ -f $aot ]]; then opts+=("-XX:AOTCache=$aot"); fi
+exec "$java" "${opts[@]}" -jar "$jar" "$@"
