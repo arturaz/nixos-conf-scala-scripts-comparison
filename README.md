@@ -543,3 +543,58 @@ The rewrites, the checks and this README were done with
 [Claude Code](https://claude.com/claude-code) (Claude Opus 5.5) in November 2026, under my
 direction, working on my NixOS configuration repository. Each variant was a branch there;
 this repository is a snapshot of the scripts from each.
+
+An LLM wrote code for seven effect stacks, several of which it had little real-world code
+to learn from (kyo 1.0 release candidates, Ox 1.x, zio-cli, cats-effect-cps). The result
+is good code, but mostly because of how the work was set up. Its first drafts were often
+wrong in ways that looked right.
+
+### What made it work
+
+- **Reading the libraries' source instead of trusting memory.** For each library, the
+  source jar was fetched and the actual APIs read before writing code. Several facts this
+  comparison depends on came only from there:
+  - `ZIOApp` exits 0 for any success;
+  - `OxApp` exits 0 on Ctrl-C by default;
+  - zio-cli's runner prints a FIGlet banner and ignores leftover arguments;
+  - cats-mtl raises a private `Submarine` exception that only its own `rescue` catches;
+  - os-lib registers a JVM shutdown hook per process;
+  - kyo's `Maybe.foreach` takes `A => Unit`.
+- **Prototypes before ports.** Each stack was tried in a small scratch file first, on the
+  same Scala version and compiler flags. That's how the cats-effect-cps breakage on Scala
+  3.9, zio-direct's dependency weight and Ox's exit-code default showed up before six
+  scripts were ported.
+- **The compiler as the first reviewer.** `-Werror`, `-Wunused:all`, and later
+  `-Wnonunit-statement -Wvalue-discard`, turned many mistakes into compile errors on the
+  spot.
+- **The same behavioural checks for every variant** (see
+  [How it was checked](#how-it-was-checked)), run against the real repository:
+  byte-identical secret-scan findings, real VM tests, and Ctrl-C under `timeout -s INT`
+  with the ssh child and temporary directory checked afterwards.
+
+### What went wrong anyway
+
+- **A real bug that compiled, passed the checks and was reviewed.** kyo's
+  `clone.parent.foreach(_.mkDir).now` never created the directory (the effect was
+  value-discarded). Only `-Wvalue-discard`, added at the very end, caught it.
+- **Mechanical edits broke code.** Removing `EitherT` plumbing with regexes broke a
+  comment, unwrapped a parenthesised `(for … ).timed`, and joined `=` and `for` onto one
+  line. The compiler caught each of these; review didn't.
+- **First fixes that didn't compile.** The first version of the os-lib fix hit a Scala
+  forward-reference rule. os-lib's own build couldn't be run in the sandbox, so the fix
+  was verified with a before/after harness instead: the patched file compiled against the
+  published jar, then the reproduction run.
+- **Claims that needed correcting after testing.** "Chaining a method on `.await`
+  mistypes" turned out to happen only with `EitherT`, not `IO` or `Future`. "The Seq loop
+  fails" was first tested with a `var` in the loop, which was a different limitation. The
+  upstream reports went out only after these were re-checked on plain dotty-cps-async.
+- **Framing that needed correcting from me.** For example, "I didn't miss referential
+  transparency", or "a marker capability is only a convention", as if `IO` were enforced.
+
+### The lesson
+
+An LLM can write decent code for unfamiliar libraries, but its mistakes look exactly like
+correct code. What made this trustworthy was a stack and a setup that turn mistakes into
+compile errors or failing checks. That's the same stupidity resistance the
+[verdict](#verdict) is about, and why `EitherT` plus strict compiler flags is a sensible
+pick for code an LLM will keep maintaining.
