@@ -76,6 +76,18 @@ Anything that actually calls `nix`, `ssh` or the router needs the real configura
 which isn't public. Note that the variants share the cache directory per script name, so
 switching between variants recompiles.
 
+The AOT cache is what makes these feel like native scripts. JDK 25+ can record which
+classes a training run loaded and linked (`-XX:AOTCacheOutput`), and later runs map them
+in ready to use. `scala-lib/run` trains on `<script> --help` right after compiling. For
+the cats-effect `test.scala -l` (10 runs each):
+
+| how it's started | wall time |
+|---|---:|
+| `scala-lib/run`: jar + AOT cache + C1-only, SerialGC | **148 ms** |
+| same jar and flags, no AOT cache | 391 ms |
+| plain `java -jar` | 444 ms |
+| `scala-cli run` (warm compile server) | 733 ms |
+
 ## How it was checked
 
 Each variant was ported from the cats-effect version, then run against the real
@@ -118,7 +130,7 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
   them, and the explicit lifting that looks like noise is exactly what makes a mistake
   visible. It also keeps the best surrounding libraries (decline, os-lib) and every Monad
   combinator. The plumbing is the price, and with an LLM typing it, a small one.
-- **Native ZIO is the other stupidity-resistant option.** Typed errors with no
+- **The strongest alternative: native ZIO**, the other stupidity-resistant option. Typed errors with no
   transformer, `catchAll` that only sees `E`, defects kept apart. Expect to wrap zio-cli
   and to use thinner file and process libraries.
 - **cats-mtl reads better than `EitherT`, but trades a compile error for a convention.**
@@ -278,7 +290,7 @@ layer a line is in. The errors are just values, so nothing can swallow them or l
 escape. And it needs no new library, no new runtime and no conventions a reviewer has to
 remember.
 
-### cats-effect + cats-mtl: the strongest alternative
+### cats-effect + cats-mtl: reads better, but trades compile errors for a convention
 
 The port was almost mechanical. Removing the plumbing turned every function that can fail
 into a compile error ("no `Raise[IO, ScriptError]`"), and adding `(using CanFail)` fixed
@@ -379,7 +391,7 @@ What to know:
     effects show up in types for real, but libraries like os-lib aren't annotated for it
     yet.
 
-### ZIO, native stack: the cleanest effectful code
+### ZIO, native stack: the strongest alternative
 
 - **Code:** typed errors without transformers, and plain for-comprehensions.
 - **Cleanup:** `ZIO.acquireRelease`/`ZIO.scoped` handle resources, and zio-nio's
