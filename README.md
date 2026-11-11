@@ -308,7 +308,7 @@ What it costs:
 In short: it reads better than `EitherT` for-comprehensions, but it ties you to a macro
 that broke on the current compiler. I wouldn't rely on it until that's fixed.
 
-### Ox: no effect runtime, and it held up
+### Ox: no effect runtime: it held up, but effects don't show in types
 
 The most different approach, and the most surprising result:
 - **No effect type at all.** Steps are plain methods that block (on virtual threads). Errors
@@ -338,6 +338,19 @@ What to know:
   with side effects between blocking calls it could matter.
 - **You lose** referential transparency and the Monad combinator vocabulary. For
   short-lived scripts that mostly spawn processes and wait, I didn't miss them.
+- **Nothing in a signature says a function has effects. This is the deal-breaker for me.**
+  `def isBuilt(…): Boolean` runs `nix`; `def ok(args: String*): Boolean` runs `git`. The
+  types only show:
+  - errors (`Either[ScriptError, A]`, with `.ok()` marking where things can fail);
+  - concurrency scope (`using Ox`, needed to fork or register cleanup, but not to run a
+    process, read a file or print).
+
+  So you can't tell a pure helper from one that ssh's into a machine, and refactoring
+  can't rely on the difference. In the other six variants, `IO`/`ZIO`/`< Effects` in the
+  return type is exactly that signal. A marker capability (`using Effects`) would only be a
+  convention, since nothing stops unmarked code from calling `os.proc`. Scala 3's
+  experimental capture checking aims to make direct-style effects show up in types, but
+  libraries like os-lib aren't annotated for it yet.
 
 ### ZIO, native stack: the cleanest effectful code
 
@@ -471,6 +484,7 @@ threads and `boundary`/`break`.
 | surrounding libraries | best | best | best | OK | weak CLI, thin file/process libs | best | best |
 | compile / jar | medium | medium | slower / medium | slowest / bigger | fastest / smallest | medium / biggest | fast / small |
 | startup / memory | medium | medium | medium | slowest / most | medium | medium | **fastest / least** |
+| effects in signatures | yes (`IO`) | yes (`IO`) | yes (`EitherT[IO, …]`) | yes (`< S`) | yes (`ZIO`) | yes (`ZIO`) | **no** (only errors, as `Either`) |
 | maturity | stable | stable | **broken on Scala ≥ 3.9** | RC | stable (zio-nio stale) | stable | stable |
 
 - **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
@@ -479,9 +493,12 @@ threads and `boundary`/`break`.
 - **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
   keeps all of that and drops the plumbing. In exchange, typed errors become hidden
   exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
-- **For CLI scripts like these, Ox is a serious contender.** It's the least code, the
-  fastest, and the same libraries, with no effect system at all. The trade-offs are
-  `.ok()`'s catch-all hazard and interruption only at blocking calls.
+- **Ox has the best numbers, but I won't use it.** It's the least code, the fastest, and
+  the same libraries, with no effect system at all. But nothing in a type says a function
+  has effects, and that's the main thing I want from an effect system; it's why I stay
+  on `IO` despite `EitherT`'s plumbing. Its other trade-offs are `.ok()`'s catch-all
+  hazard and interruption only at blocking calls. If effect tracking doesn't matter to
+  you, it's a serious contender for CLI scripts like these.
 - **If you want the strongest guarantees with the least code in an effect system:
   native ZIO.** Expect to wrap zio-cli and to use thinner file and process libraries.
 - **Avoid for now:**
