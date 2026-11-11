@@ -509,6 +509,78 @@ threads and `boundary`/`break`.
     [os-lib#457](https://github.com/com-lihaoyi/os-lib/pull/457).
 - **JSON:** upickle, kyo-schema-json and zio-json are all fine for this.
 
+## Outside Scala: a hypothetical comparison
+
+**Not tried.** Nothing below was implemented or measured. It's how the same criteria
+would likely apply to other ecosystems, from what's known about them, so treat details
+(especially tooling versions) as things to verify.
+
+The criteria are the ones that mattered above:
+- effects visible in types;
+- errors as values;
+- mistakes turned into compile errors;
+- a good CLI and process ecosystem;
+- cleanup on Ctrl-C;
+- the script style these use: a shebang, dependencies declared in the file, shared local
+  code, and fast repeated starts.
+
+### The language and libraries
+
+| | effects in types | typed errors | discarded results caught by | CLI / processes | notes |
+|---|---|---|---|---|---|
+| **Haskell** | **enforced** (`IO`; only `unsafePerformIO` escapes) | `Either`/`ExceptT` (our `EitherT` model) | `-Wall -Werror`, `-Wunused-do-bind` | optparse-applicative (≈ decline), typed-process (≈ os-lib) | stricter than Scala. Ctrl-C arrives as an async exception (`bracket`/`mask` take care). Excellent Nix support. |
+| **TypeScript + Effect** | convention, kept by the ecosystem (`Effect<A, E, R>`) | typed `E`, defects separate | `tsc --strict`, lint (floating promises, unrun effects) | `@effect/cli`, `@effect/platform` `Command` | ZIO's model outside Scala: `Scope`, interruption, fibers. |
+| **Rust** | **none** (any function can spawn a process) | `Result` + `?` | `#[must_use]` on `Result`, `clippy -D warnings` | clap (≈ decline), `std::process` | the most mistake-resistant otherwise. SIGINT skips `Drop` unless handled (ctrlc crate, tokio signals). |
+| OCaml 5 + Eio | by capability passing (`env#fs`, `env#process_mgr`); `Unix` still escapes | `Result` | warnings-as-errors | cmdliner | the "marker capability" idea, done by a library. |
+| Kotlin + Arrow | no (`suspend` marks async, not effects) | `Either`, `Raise` DSL | compiler warnings | clikt | `Raise` is cats-mtl's model, with the same catch-all hazard. |
+| F#, Go | no | `Result` / error values (Go's ignorable without `errcheck`) | linters | Argu / cobra | below the bar here. |
+| Koka, Flix, Unison | **enforced** (algebraic effects in types) | typed | built in | small ecosystems | the direct-style dream (Ox's syntax, `IO`'s guarantees), not practical for these scripts today. |
+
+### As scripts
+
+| | shebang + inline deps | repeated start | type-checked | shared local library |
+|---|---|---|---|---|
+| **Scala, scala-cli** (this repo) | polyglot header + `//> using dep` | ~150 ms (jar + JDK AOT cache) | yes, compiled once per change | yes (`//> using file scala-lib`) |
+| **Deno + Effect** | `#!/usr/bin/env -S deno run --check …`, `import … from "npm:effect"` | ~50 ms | **only with `--check`**, cached | yes, relative imports |
+| Node + Effect | `#!/usr/bin/env node` on a `.ts` file (type stripping, recent Node) | ~50 ms | **no**: types are only erased; needs a `tsc --noEmit` step | yes, but dependencies need a `package.json` + `npm install` |
+| Bun | `#!/usr/bin/env bun` | very fast | **no** (separate `tsc`) | yes |
+| Haskell, `cabal` script | `#!/usr/bin/env cabal` + `{- cabal: … -}` header | native (builds cached) | yes | **no**, single file only |
+| Haskell, `stack script` / `nix-shell -i runghc` | yes | interpreted (~1 s) unless compiled | yes | awkward |
+| Rust, `rust-script` (or nightly `cargo -Zscript`) | `//! ```cargo` manifest in the file | native (compiles cached) | yes | awkward (`#[path]` modules) |
+| Kotlin `.main.kts` | `#!/usr/bin/env kotlin` + `@file:DependsOn` | JVM startup | yes | via `@file:Import` |
+
+Two ways to close the gaps:
+- **Node:** our own launcher's trick works there too. A header hands the script to a small
+  `run` wrapper that hashes the scripts and the shared library, runs `tsc --noEmit` and
+  the linter once per change, then execs `node`.
+- **Haskell and Rust in a Nix repo:** each script can be a Nix derivation
+  (`pkgs.writers.writeHaskellBin`, `writeRustBin`) with the shared library as a normal
+  package. That gives native starts and full checking, but every edit goes through a Nix
+  build.
+
+Deno also adds two things to the rigor:
+- **Per-script permissions in the shebang**, e.g. `--allow-run=ssh,nix,git`, a runtime
+  boundary on what each script may do.
+- **A lock file** (`deno.lock`) pinning npm versions and hashes.
+
+### Conclusion
+
+- **Haskell** is the only stack that's stricter than Scala, and the clunkiest as shared,
+  script-style code.
+- **Deno + Effect** is the smoothest non-Scala equivalent, with ZIO's model, provided
+  `--check` is never forgotten.
+- **Rust** would catch the most mistakes, but has no effect tracking, the same objection
+  as Ox.
+
+For this repo Scala still comes out ahead:
+- **scala-cli does it all:** dependencies, shared local code, compiler flags and a cached
+  build, all built in;
+- **a stronger type system** than TypeScript's (no `any`, no unchecked casts), with sealed
+  errors, newtypes and strict warnings;
+- **three serious effect systems** on one platform, without changing the build, the
+  libraries or the launcher;
+- **startup is no longer a reason against the JVM**, thanks to the AOT cache.
+
 ## Appendix: numbers
 
 **These don't decide anything.**
