@@ -23,7 +23,7 @@ Shared code is in each variant's `scala-lib/`: the entry point (`Script.scala`),
 
 | directory | stack | what's different from `cats-effect/` |
 |---|---|---|
-| [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline: `IO[Either[ScriptError, A]]` composed with `EitherT` |
+| [`cats-effect/`](cats-effect) | cats-effect 3.7.1, decline 2.6.2, os-lib 0.11.10, upickle 4.4.3 | the baseline, and what my configuration uses: `IO[Either[ScriptError, A]]` composed with `EitherT` |
 | [`cats-mtl/`](cats-mtl) | the same + cats-mtl 1.7.0 | only the errors: plain `IO[A]` with `(using Raise[IO, ScriptError])`, `Handle.allow` at the top |
 | [`kyo/`](kyo) | kyo 1.0.0-RC7: kyo-core, kyo-direct, kyo-system, kyo-schema-json, kyo-case-app | everything: kyo effects in direct style, kyo-system for processes and files, case-app for the CLI |
 | [`zio/`](zio) | zio 2.1.27, zio-streams, zio-process 0.8.1, zio-nio 2.0.2, zio-cli 0.8.2, zio-json 1.1.2 | everything: the native ZIO stack |
@@ -198,7 +198,7 @@ def steps: IO[ScriptError, Unit] =
   yield ()
 ```
 
-### cats-effect + `EitherT` (the baseline)
+### cats-effect + `EitherT`: what I'm sticking with
 
 Sound, explicit and dependency-free, but clunky:
 - **Plumbing:** 157 calls exist only to move between `IO` and `EitherT`.
@@ -212,7 +212,12 @@ Sound, explicit and dependency-free, but clunky:
   `IO`, so the code keeps stepping out of `EitherT` and back. The result is shapes like
   `Resource[IO, Either[ScriptError, A]]` and `.use(_.toEitherT.flatMap(…).value)`.
 
-### cats-effect + cats-mtl: the one I'd pick
+Still, it's what I keep. The noise is visible and boring: every lifting call says which
+layer a line is in. The errors are just values, so nothing can swallow them or let them
+escape. And it needs no new library, no new runtime and no conventions a reviewer has to
+remember.
+
+### cats-effect + cats-mtl: the strongest alternative
 
 The port was almost mechanical. Removing the plumbing turned every function that can fail
 into a compile error ("no `Raise[IO, ScriptError]`"), and adding `(using CanFail)` fixed
@@ -351,10 +356,12 @@ And comments with data from this project on two existing issues:
 | compile / jar | medium | medium | slowest / bigger | fastest / smallest | medium / biggest |
 | maturity | stable | stable | RC | stable (zio-nio stale) | stable |
 
-- **If you like the cats ecosystem and its combinators: cats-effect + cats-mtl.** It
-  keeps decline and os-lib and every Monad combinator, and gives typed errors without
-  transformer plumbing. The rule it needs (no catch-all handlers around raising code) is
-  easy to keep.
+- **My choice: cats-effect + `EitherT`.** It keeps the best surrounding libraries
+  (decline, os-lib), every Monad combinator, and typed errors that are plain values, so
+  nothing can swallow or leak them. I'll take the plumbing for that.
+- **If the plumbing bothers you more than it bothers me: cats-effect + cats-mtl.** It
+  keeps all of that and drops the plumbing. In exchange, typed errors become hidden
+  exceptions in `IO`, safe as long as no catch-all handler wraps raising code.
 - **If you want the strongest guarantees with the least code: native ZIO.** Expect to
   wrap zio-cli and to use thinner file and process libraries.
 - **Mixing ZIO with cats syntax** works, but runs into invariance traps and produces the
