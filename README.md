@@ -137,7 +137,7 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
   - **kyo:** the most interesting design and the nicest-reading code, but for something
     you maintain, I'd wait for 1.0.
 
-**One more guard for any `IO`/`ZIO` stack:** the classic silent bug there is an effect
+**One more guard, for every stack:** the classic silent bug in effect code is an effect
 that's built but never run (`Console[IO].println("x")` as a statement on its own). Scala 3
 catches it with `-Wnonunit-statement -Wvalue-discard` under `-Werror`:
 
@@ -147,9 +147,18 @@ catches it with `-Wnonunit-statement -Wvalue-discard` under `-Werror`:
    |      unused value of type cats.effect.IO[Unit]
 ```
 
-My configuration now enables both. They found only two deliberate discards, of `Boolean`s
-from os-lib's `waitFor()` and `os.remove`, which now say `: Unit`. The variants here
-predate that.
+All seven variants now enable both. What they found:
+- **A real bug in the kyo variant:** `clone.parent.foreach(_.mkDir).now`. kyo's
+  `Maybe.foreach` takes `A => Unit`, so `mkDir`'s effect (`Unit < PathWrite`) was
+  value-discarded and never ran: the directory was never created. It compiled and
+  passed review. Now it's `fold[Unit < PathWrite](())(_.mkDir)`.
+- **Everything else was a deliberate discard**, now marked `: Unit`. These are os-lib's
+  `waitFor()`/`os.remove` `Boolean`s, ignored exit codes, and parsing arguments only to
+  check them. In the direct-style variants (Ox, kyo) there are more of these, because
+  plain calls return values you often don't need.
+- **Macros again:** inside kyo-direct's `direct { }` and cats-effect-cps' `async { }`, the
+  macro's rewrite loses a `: Unit` ascription, so the warning comes back. `val _ = …`
+  works there.
 
 ## Findings
 

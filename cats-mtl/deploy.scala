@@ -329,7 +329,7 @@ final case class Deploy(
             val (proc, stdin) = read(file)
             into(dir / file, proc, stdin, Proc.devNull).flatMap(noteIfChanged(dir / file).whenA(_))
           }
-          _ <- IO.blocking(if os.list(dir).isEmpty then os.remove(dir))
+          _ <- IO.blocking(if os.list(dir).isEmpty then os.remove(dir): Unit)
         yield ()
       }
     yield ()

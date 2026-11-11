@@ -235,7 +235,7 @@ final case class Deploy(
         tmp.move(dest, Path.MoveOptions(replace = Path.Replace.Existing)).now
         true
       else
-        tmp.remove.now
+        val _ = tmp.remove.now
         false
     }
 

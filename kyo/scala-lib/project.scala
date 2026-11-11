@@ -18,4 +18,7 @@
 // methods carry @nowarn annotations which, inlined into our code, warn ("@nowarn
 // annotation does not suppress any warnings", with no position); kyo-direct's own
 // source, inlined, has an unused import.
-//> using options -deprecation -feature -Wunused:imports,privates,locals,implicits,nowarn -Werror "-Wconf:msg=@nowarn annotation does not suppress any warnings:s" "-Wconf:src=kyo/Direct\.scala:s"
+// -Wnonunit-statement and -Wvalue-discard: a value computed and dropped, e.g. an effect built
+// but never sequenced (so never run), fails the build; deliberate discards say `: Unit`,
+// or `val _ =` inside `direct { }` (kyo-direct's rewrite loses a `: Unit` ascription).
+//> using options -deprecation -feature -Wunused:imports,privates,locals,implicits,nowarn -Wnonunit-statement -Wvalue-discard -Werror "-Wconf:msg=@nowarn annotation does not suppress any warnings:s" "-Wconf:src=kyo/Direct\.scala:s"

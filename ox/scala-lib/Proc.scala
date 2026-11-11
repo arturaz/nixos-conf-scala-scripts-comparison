@@ -18,7 +18,7 @@ object Proc:
       stdin: os.ProcessInput = os.Inherit
   ): Int =
     spawned(proc, cwd, stdin, stdout, stderr, env) { p =>
-      p.waitFor()
+      p.waitFor(): Unit
       p.exitCode()
     }
 
@@ -36,7 +36,7 @@ object Proc:
   ): (Int, String) =
     spawned(proc, cwd, stdin, os.Pipe, if mergeErr then os.Pipe else os.Inherit, env, mergeErr) { p =>
       val out = String(p.stdout.readAllBytes(), "UTF-8")
-      p.waitFor()
+      p.waitFor(): Unit
       (p.exitCode(), if raw then out else out.reverse.dropWhile(_ == '\n').reverse)
     }
 
@@ -97,7 +97,7 @@ object Proc:
   def foreground(proc: os.proc, cwd: os.Path): Int =
     val previous = Signal.handle(Signal("INT"), _ => ())
     try status(proc, cwd)
-    finally Signal.handle(Signal("INT"), previous)
+    finally Signal.handle(Signal("INT"), previous): Unit
 
   /** Discards a command's output. */
   val devNull: os.ProcessOutput = os.Path("/dev/null")

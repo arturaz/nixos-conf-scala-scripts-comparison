@@ -77,7 +77,7 @@ object Deploy:
     val target = args.destination
     val tmp = useInScope(os.temp.dir())(os.remove.all(_))
     val sshOpts = Seq("-o", "ControlMaster=auto", "-o", show"ControlPath=$tmp/ssh-%C", "-o", "ControlPersist=60")
-    releaseAfterScope(Proc.status(os.proc("ssh", sshOpts, "-O", "exit", target), root, Proc.devNull, Proc.devNull))
+    releaseAfterScope(Proc.status(os.proc("ssh", sshOpts, "-O", "exit", target), root, Proc.devNull, Proc.devNull): Unit)
     val uncommitted = AtomicReference(Vector.empty[String])
     releaseAfterScope {
       val files = uncommitted.get()
@@ -224,7 +224,7 @@ final case class Deploy(
         os.move.over(tmp, dest)
         true
       case _ =>
-        os.remove(tmp)
+        os.remove(tmp): Unit
         false
 
   def copyMachineFile(file: String): Either[ScriptError, Unit] =
@@ -308,7 +308,7 @@ final case class Deploy(
       for file <- plasmaFiles do
         val (proc, stdin) = read(file)
         if into(dir / file, proc, stdin, Proc.devNull) then noteIfChanged(dir / file).ok()
-      if os.list(dir).isEmpty then os.remove(dir)
+      if os.list(dir).isEmpty then os.remove(dir): Unit
   }
 
   /** Builds the system, by default on the target (mostly: downloads from

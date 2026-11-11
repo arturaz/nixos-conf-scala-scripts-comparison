@@ -125,7 +125,7 @@ object Scan:
         val dir = Path.tempDir("check-secrets").now
         val withIndex = Git(root, Map("GIT_INDEX_FILE" -> (dir / "index").toString))
         val git = Git(root, Map.empty)
-        withIndex("add", "-A").now
+        val _ = withIndex("add", "-A").now
         val tree = withIndex("write-tree").now
         val unpushed = if git.hasHead.now then git("rev-list", "HEAD", "--not", "--remotes").now else ""
         nonEmpty(git, lines(tree) ++ lines(unpushed)).now

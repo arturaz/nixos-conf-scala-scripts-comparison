@@ -115,7 +115,7 @@ final case class RouterBackup(root: os.Path, backup: Backup, router: String, mes
     if git.status("fetch", "--quiet", "origin") == 0 then
       if git.status("rebase", "--quiet", show"origin/$branch") == 0 then Right(())
       else
-        git.status("rebase", "--abort")
+        git.status("rebase", "--abort"): Unit
         fail(show"${git.dir} doesn't rebase onto origin/$branch; sort it out there.")
     else Right(warn(show"could not fetch $repo; going on with the clone as it is."))
 

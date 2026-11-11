@@ -38,7 +38,8 @@ object Proc:
       .use { p =>
         IO.interruptible {
           val out = String(p.stdout.readAllBytes(), "UTF-8")
-          p.waitFor()
+          // waitFor's Boolean (whether it ended in time) is always true without a timeout.
+          p.waitFor(): Unit
           (p.exitCode(), if raw then out else out.reverse.dropWhile(_ == '\n').reverse)
         }
       }

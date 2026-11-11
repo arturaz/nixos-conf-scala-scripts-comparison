@@ -334,7 +334,8 @@ final case class Deploy(
       for file <- plasmaFiles.toVector do
         val (proc, stdin) = read(file)
         if into(dir / file, proc, stdin, Proc.devNull).awaitIO then noteIfChanged(dir / file).await
-      IO.blocking(if os.list(dir).isEmpty then os.remove(dir)).awaitIO
+      // `val _ =`, not `: Unit`: the async macro's rewrite loses the ascription.
+      IO.blocking(if os.list(dir).isEmpty then { val _ = os.remove(dir) }).awaitIO
   }
 
   /** Builds the system, by default on the target (mostly: downloads from

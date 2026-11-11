@@ -20,7 +20,7 @@ object Proc:
   ): UIO[Int] =
     ZIO.scoped(
       spawned(proc, cwd, stdin, stdout, stderr, env)
-        .flatMap(p => ZIO.attemptBlockingInterrupt { p.waitFor(); p.exitCode() }.orDie)
+        .flatMap(p => ZIO.attemptBlockingInterrupt { p.waitFor(): Unit; p.exitCode() }.orDie)
     )
 
   /** Runs `proc` with `stdin` as its input, returning its exit code and its output
@@ -40,7 +40,7 @@ object Proc:
         .flatMap { p =>
           ZIO.attemptBlockingInterrupt {
             val out = String(p.stdout.readAllBytes(), "UTF-8")
-            p.waitFor()
+            p.waitFor(): Unit
             (p.exitCode(), if raw then out else out.reverse.dropWhile(_ == '\n').reverse)
           }.orDie
         }

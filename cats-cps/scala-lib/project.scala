@@ -17,4 +17,6 @@
 //> using dep com.lihaoyi::upickle:4.4.3
 // -Wunused without explicits and patvars: cats-effect-cps' expansion of `async[F] { ... }`
 // warns "unused explicit parameter" about every async block.
-//> using options -deprecation -feature -Wunused:imports,privates,locals,implicits,nowarn -Werror
+// -Wnonunit-statement and -Wvalue-discard: a value computed and dropped, e.g. an effect built
+// but never sequenced (so never run), fails the build; deliberate discards say `: Unit`.
+//> using options -deprecation -feature -Wunused:imports,privates,locals,implicits,nowarn -Wnonunit-statement -Wvalue-discard -Werror

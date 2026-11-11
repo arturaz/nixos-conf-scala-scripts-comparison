@@ -93,7 +93,8 @@ final case class RouterBackup(root: Path, backup: Backup, router: String, messag
       val clone = clonePath.now
       val git = Git(clone)
       if !(clone / ".git").isDirectory.now then
-        clone.parent.foreach(_.mkDir).now
+        // fold, not foreach: Maybe.foreach takes A => Unit, which would drop mkDir's effect.
+        clone.parent.fold[Unit < PathWrite](())(_.mkDir).now
         Proc
           .succeedOr(Command("git", "clone", "--quiet", repo, clone.toString), root)(_ =>
             show"could not clone $repo."
@@ -122,7 +123,7 @@ final case class RouterBackup(root: Path, backup: Backup, router: String, messag
       if git.status("fetch", "--quiet", "origin").now != 0 then
         warn(show"could not fetch $repo; going on with the clone as it is.").now
       else if git.status("rebase", "--quiet", show"origin/$branch").now != 0 then
-        git.status("rebase", "--abort").now
+        val _ = git.status("rebase", "--abort").now
         fail(show"${git.dir} doesn't rebase onto origin/$branch; sort it out there.").now
     }
 
@@ -204,7 +205,7 @@ final case class RouterBackup(root: Path, backup: Backup, router: String, messag
         )(out => show"could not make the binary backup on $router: $out")
         .now
       if !out.contains("Configuration backup saved") then fail(show"the binary backup failed on $router: $out").now
-      binaryFile.parent.foreach(_.mkDir).now
+      binaryFile.parent.fold[Unit < PathWrite](())(_.mkDir).now
       Proc
         .succeedOr(Command("scp", "-q", show"$router:$name.backup", newFile.toString), root)(_ =>
           show"could not copy the binary backup from $router."

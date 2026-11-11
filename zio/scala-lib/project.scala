@@ -15,4 +15,6 @@
 //> using dep dev.zio::zio-nio:2.0.2
 //> using dep dev.zio::zio-cli:0.8.2
 //> using dep dev.zio::zio-json:1.1.2
-//> using options -deprecation -feature -Wunused:all -Werror
+// -Wnonunit-statement and -Wvalue-discard: a value computed and dropped, e.g. an effect built
+// but never sequenced (so never run), fails the build; deliberate discards say `: Unit`.
+//> using options -deprecation -feature -Wunused:all -Wnonunit-statement -Wvalue-discard -Werror

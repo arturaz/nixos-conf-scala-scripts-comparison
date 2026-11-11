@@ -29,7 +29,7 @@ object Main extends ScriptApp[DeployOptions]:
       val root = Repo.root.now
       val known = KnownHosts.discover(root).now
       // Only checked here: deploy.scala gets the arguments as they are.
-      DeployArgs.parse(known, args).now
+      val _ = DeployArgs.parse(known, args).now
       val flake = FlakeRef.of(root).unwrap
       def notDeployed(what: String) =
         show"$what (see above). Nothing was deployed; the updated files are left as they " +

@@ -337,7 +337,7 @@ final case class Deploy(
             val (proc, stdin) = read(file)
             into(dir / file, proc, stdin, Proc.devNull).liftTScriptError.flatMap(noteIfChanged(dir / file).toEitherT.whenA(_))
           }
-          _ <- IO.blocking(if os.list(dir).isEmpty then os.remove(dir)).liftTScriptError
+          _ <- IO.blocking(if os.list(dir).isEmpty then os.remove(dir): Unit).liftTScriptError
         yield ()
       }
     yield ()).value
