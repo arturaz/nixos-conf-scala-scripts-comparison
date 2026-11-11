@@ -129,11 +129,20 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
 | surrounding libraries | best (decline, os-lib) | best | best | OK (case-app: options only) | weak CLI, thin file/process libs | best | best |
 | fragility | none | none | macro quirks | RC, macro quirks, bugs reported | zio-nio stale | invariance traps | none |
 
-- **My choice: cats-effect + `EitherT`.** Its failure modes are compile errors, not
-  runtime surprises. Errors are plain values in the type, so nothing can swallow or leak
-  them, and the explicit lifting that looks like noise is exactly what makes a mistake
-  visible. It also keeps the best surrounding libraries (decline, os-lib) and every Monad
-  combinator. The plumbing is the price, and with an LLM typing it, a small one.
+- **My choice: cats-effect + `EitherT`, in direct style if the macro is solid.** Its
+  failure modes are compile errors, not runtime surprises. Errors are plain values in the
+  type, so nothing can swallow or leak them. It also keeps the best surrounding libraries
+  (decline, os-lib) and every Monad combinator.
+  - **Preferred: with dotty-cps-async's `async`/`.await`** (the `cats-cps/` variant). The
+    same error model, but it reads like plain code: ordinary `if`/`match`/`for` over
+    awaited values instead of nesting, `ifM`, `whenA` and lifting calls. It works on
+    current Scala through dotty-cps-async's own cats-effect connector, not typelevel's
+    cats-effect-cps (see [below](#dotty-cps-async-eithert-in-direct-style-through-a-macro)).
+    The condition is the macro: a few quirks are left, the main one is being fixed
+    upstream, and it has to keep up with every Scala release.
+  - **Fallback: plain `EitherT` for-comprehensions** (the `cats-effect/` variant), which
+    needs no macro. The explicit lifting that looks like noise makes a mistake visible.
+    The plumbing is the price, and with an LLM typing it, a small one.
 - **The strongest alternative: native ZIO**, the other stupidity-resistant option. Typed errors with no
   transformer, `catchAll` that only sees `E`, defects kept apart. Expect to wrap zio-cli
   and to use thinner file and process libraries.
@@ -146,12 +155,6 @@ speed don't separate these stacks at all (see the [appendix](#appendix-numbers))
   `.ok()` has cats-mtl's catch-all hazard, and interruption happens only at blocking
   calls. If effect tracking doesn't matter to you, it works for CLI scripts like these:
   plain code, the same libraries, no runtime.
-- **Direct style over `EitherT` (dotty-cps-async) keeps the sound error model** and
-  removes the nesting and the control-flow combinators. It works on current Scala when
-  you use dotty-cps-async's own cats-effect connector, not typelevel's cats-effect-cps
-  (see [below](#dotty-cps-async-eithert-in-direct-style-through-a-macro)). The cost is a
-  macro between you and the compiler: a few quirks to learn, and a bet that it keeps up
-  with every Scala release.
 - **Avoid for now:**
   - **ZIO with cats syntax:** a `handleError` that silently does nothing is the worst kind
     of trap, and you drag in both ecosystems.
@@ -282,7 +285,7 @@ What each style makes you write, per variant (counts over all six scripts and th
 | zio-interop | none | – | 7 `.orDie`, 4 type ascriptions |
 | ox | 93 `.ok()` | 25 `either { … }` | – |
 
-### cats-effect + `EitherT`: what I'm sticking with
+### cats-effect + `EitherT`: the model I'm sticking with
 
 Sound, explicit and dependency-free, but clunky:
 - **Plumbing:** 157 calls exist only to move between `IO` and `EitherT`.
@@ -367,7 +370,8 @@ What it still costs, on 1.4.0:
 
 In short: it reads better than `EitherT` for-comprehensions with the same error model,
 and on a current dotty-cps-async it works on the current compiler. What's left is the
-usual price of a macro: some quirks, and the dependence on it keeping up.
+usual price of a macro: some quirks, and the dependence on it keeping up. If the macro
+stays solid, this is the variant I'd pick; plain `EitherT` is the fallback.
 
 ### Ox: no effect runtime, but effects don't show in types
 
